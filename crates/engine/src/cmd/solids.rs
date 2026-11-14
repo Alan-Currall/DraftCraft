@@ -14,6 +14,7 @@ use super::CommandSpec;
 use crate::{EngineError, Result, Session};
 
 mod edit;
+mod look;
 mod prims;
 mod sweep;
 #[cfg(test)]
@@ -68,6 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
     v.extend(sweep::specs());
     v.extend(edit::specs());
     v.extend(views::specs());
+    v.extend(look::specs());
     v
 }
 

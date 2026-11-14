@@ -206,6 +206,7 @@ pub enum Icon {
     Flatshot,
     ViewIso,
     VisualStyle,
+    PlanView,
 }
 
 struct Pen<'a> {
@@ -465,6 +466,14 @@ fn paint_solid_tools(pen: &Pen<'_>, icon: Icon, b: Color32, a: Color32) {
             pen.c(12.0, 12.0, 8.0, b);
             pen.tri([(12.0, 4.0), (12.0, 20.0), (4.5, 15.0)], a.gamma_multiply(0.5));
             pen.fill_c(9.0, 10.0, 2.0, a);
+        }
+        PlanView => {
+            // The plan view: a square seen from straight above, the viewer's eye over it.
+            pen.poly(&[(4.0, 9.0), (20.0, 9.0), (20.0, 21.0), (4.0, 21.0)], true, b);
+            pen.l(4.0, 15.0, 20.0, 15.0);
+            pen.l(12.0, 9.0, 12.0, 21.0);
+            pen.arc(12.0, 6.0, 4.0, 180.0, 360.0, a);
+            pen.fill_c(12.0, 4.5, 1.4, a);
         }
         _ => {}
     }

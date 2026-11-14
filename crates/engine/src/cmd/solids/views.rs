@@ -27,7 +27,7 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// The named views: looking direction and up.
-fn named_view(name: &str) -> Option<(Vec3, Vec3)> {
+pub(crate) fn named_view(name: &str) -> Option<(Vec3, Vec3)> {
     let v = |x, y, z| Vec3::new(x, y, z);
     Some(match name.to_ascii_lowercase().as_str() {
         "top" => (v(0.0, 0.0, -1.0), v(0.0, 1.0, 0.0)),

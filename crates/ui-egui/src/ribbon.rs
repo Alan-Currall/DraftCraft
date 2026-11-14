@@ -261,6 +261,14 @@ const SOLID_TABS: &[RibbonTab] = &[RibbonTab {
             ],
         },
         RibbonPanel { title: "Section", cols: &[Large(b(Icon::SectionCut, "section", "Section")), Large(b(Icon::Flatshot, "flatshot", "Flatshot"))] },
+        RibbonPanel {
+            title: "View",
+            cols: &[
+                Large(b(Icon::VisualStyle, "vscurrent", "Visual Styles")),
+                Large(b(Icon::ViewIso, "vpoint", "Viewpoint")),
+                Icons(&[b(Icon::Orbit, "3dorbit", "Orbit"), b(Icon::PlanView, "plan", "Plan View")]),
+            ],
+        },
     ],
 }];
 #[cfg(not(feature = "solids"))]

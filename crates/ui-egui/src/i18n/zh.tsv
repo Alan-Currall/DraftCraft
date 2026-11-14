@@ -1646,3 +1646,16 @@ menu	CAD Standards	CAD 标准
 	Chamfer Edge	倒角边
 	Chamfer Edges	倒角边
 	Flatshot	平面摄影
+	Viewpoint	视点
+	Visual Styles	视觉样式
+	Plan View	平面视图
+	3D Views	三维视图
+	Constrained Orbit	受约束的动态观察
+	Wireframe	线框
+	Hidden	隐藏
+	Realistic	真实
+	Conceptual	概念
+	Shaded	着色
+	Shaded with edges	带边缘着色
+	Shades of Gray	灰度
+	X-Ray	X 射线

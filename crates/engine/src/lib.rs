@@ -59,6 +59,8 @@ mod running;
 mod session;
 mod settings;
 mod view;
+#[cfg(feature = "solids")]
+pub mod view3d;
 
 pub use doc_state::{DocState, Snapshot};
 pub use error::{EngineError, Result};

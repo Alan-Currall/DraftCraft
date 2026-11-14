@@ -267,3 +267,59 @@ fn an_opened_solid_gets_the_look_of_its_body() {
     });
     super::refresh_looks(&mut d);
 }
+
+#[test]
+fn views_turn_and_go_back_to_plan_without_touching_the_drawing() {
+    let mut s = Session::new();
+    s.execute("box", &json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap();
+    let rev = s.state().unwrap().revision;
+    assert!(s.view3d().is_none());
+    let r = s.execute("vpoint", &json!({"view": "seiso"})).unwrap();
+    assert_eq!(r["style"], "wireframe");
+    let v = s.view3d().unwrap();
+    // South-east, above: looking toward -x, +y, -z.
+    assert!(v.dir.x < 0.0 && v.dir.y > 0.0 && v.dir.z < 0.0, "{:?}", v.dir);
+    // Framed around the box (its far corners fit on screen).
+    let (q, _) = v.to_plane(Vec3::new(10.0, 10.0, 10.0));
+    assert!((q - v.center).len() < v.height, "{q:?} {v:?}");
+    // VPOINT x,y,z is where the viewer stands.
+    s.execute("vpoint", &json!({"point": [0, -1, 0]})).unwrap();
+    assert!((s.view3d().unwrap().dir - Vec3::Y).len() < 1e-12);
+    s.execute("vscurrent", &json!({"style": "Shaded with edges"})).unwrap();
+    assert_eq!(s.view3d().unwrap().style, crate::view3d::VisualStyle::ShadedWithEdges);
+    s.execute("3dorbit", &json!({"azimuth": 90})).unwrap();
+    let d = s.view3d().unwrap().dir;
+    assert!((d - Vec3::new(-1.0, 0.0, 0.0)).len() < 1e-9, "{d:?}");
+    s.execute("plan", &json!({})).unwrap();
+    assert!(s.view3d().is_none());
+    // From the plan view a style starts at the top view; 2D Wireframe goes back to plan.
+    s.execute("vscurrent", &json!({"style": "hidden"})).unwrap();
+    assert!((s.view3d().unwrap().dir - Vec3::new(0.0, 0.0, -1.0)).len() < 1e-12);
+    s.execute("vscurrent", &json!({"style": "2dwireframe"})).unwrap();
+    assert!(s.view3d().is_none());
+    assert_eq!(s.state().unwrap().revision, rev, "views never change the drawing");
+    assert_eq!(s.state().unwrap().undo.len(), 1, "only the box is undoable");
+    for bad in [json!({"view": "sideways"}), json!({"point": [0, 0, 0]}), json!({}), json!({"point": "x"})] {
+        assert!(s.execute("vpoint", &bad).is_err(), "{bad}");
+    }
+    assert!(s.execute("vscurrent", &json!({"style": "sketchy-ish"})).is_err());
+    // Huge angles still leave a usable view.
+    s.execute("3dorbit", &json!({"azimuth": 1e308, "elevation": -1e308})).unwrap();
+    assert!(s.view3d().unwrap().dir.is_finite());
+}
+
+#[test]
+fn interactive_orbit_starts_a_3d_view_and_vpoint_takes_typed_points() {
+    let mut s = Session::new();
+    s.cmdline("3dorbit").unwrap();
+    assert!(s.view3d().is_some(), "3DORBIT turns the plan view into the top view");
+    s.cmdline("").unwrap();
+    assert!(s.running.is_none());
+    s.cmdline("vpoint").unwrap();
+    s.cmdline("1,1,1").unwrap();
+    let d = s.view3d().unwrap().dir;
+    assert!(d.x < 0.0 && d.y < 0.0 && d.z < 0.0, "{d:?}");
+    s.cmdline("vs").unwrap();
+    s.cmdline("conceptual").unwrap();
+    assert_eq!(s.view3d().unwrap().style, crate::view3d::VisualStyle::Conceptual);
+}
