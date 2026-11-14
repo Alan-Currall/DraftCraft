@@ -98,3 +98,12 @@ contributors, and where a line says so by Skryx Dev:
 | `assets/brand/draftcraft-logo-light-text.png` | WithShalom Studios (DraftCraft) | original work for DraftCraft: the full logo (the icon beside the wordmark with ™) as in `docs/brand/draftcraft-logo.svg` (Source Sans 3, SIL OFL 1.1, from storytold/craft-fonts, converted to outlines), cropped to its ink and scaled to 96 px tall | MIT OR Apache-2.0 (the wordmark's glyph outlines: SIL OFL 1.1; the DraftCraft name and marks: [docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt)) | The full logo at the left of the top row (dark chrome, light text) |
 | `assets/brand/draftcraft-logo-dark-text.png` | WithShalom Studios (DraftCraft) | original work for DraftCraft: the full logo (the icon beside the wordmark with ™) as in `docs/brand/draftcraft-logo.svg` (Source Sans 3, SIL OFL 1.1, from storytold/craft-fonts, converted to outlines), cropped to its ink and scaled to 96 px tall | MIT OR Apache-2.0 (the wordmark's glyph outlines: SIL OFL 1.1; the DraftCraft name and marks: [docs/brand/LICENSE-brand.txt](docs/brand/LICENSE-brand.txt)) | The full logo at the left of the top row (light chrome, dark text) |
 | `docs/brand/draftcraft-logo-dark.svg` | WithShalom Studios (DraftCraft) | as `docs/brand/draftcraft-logo.svg`, light type | as `docs/brand/draftcraft-logo.svg` | README logo for dark backgrounds |
+
+## Code linked by the optional `solids` feature
+
+Not assets, listed here so the 3D solids work (docs/solids.md) names everything it brings in. Builds
+without `--features solids` contain none of it.
+
+| Code | Author | Source | Licence | Notes |
+|---|---|---|---|---|
+| solidcore (solidcore, solidcore-ops, solidcore-record, solidcore-convert, solidcore-tess) | The solidcore contributors; a Rust port of NVIDIA's SMLib and SM_API (USD BRep v1.0.1, Copyright (c) 2020-2026 NVIDIA CORPORATION & AFFILIATES) | [tangency-labs/solidcore ce5c6e9](https://github.com/tangency-labs/solidcore/tree/ce5c6e95ff4ec28e673f287b8291dc0cd38b1901) | Apache-2.0 | Git dependency, used unmodified; only `crates/solid` (draftcraft-solid) names it; its notice is reproduced in `NOTICE` |

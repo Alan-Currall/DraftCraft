@@ -205,6 +205,9 @@ pub enum Icon {
     SectionCut,
     Flatshot,
     ViewIso,
+    ViewTop,
+    ViewFront,
+    ViewRight,
     VisualStyle,
     PlanView,
 }
@@ -461,6 +464,18 @@ fn paint_solid_tools(pen: &Pen<'_>, icon: Icon, b: Color32, a: Color32) {
         ViewIso => {
             iso_box(pen, 12.0, 20.0, 8.0, 8.0, 8.0, b);
             pen.fill_c(12.0, 12.0, 1.8, a);
+        }
+        ViewTop | ViewFront | ViewRight => {
+            // A cube with the face the view looks at filled.
+            iso_box(pen, 12.0, 20.0, 8.0, 8.0, 8.0, b);
+            let face = match icon {
+                ViewTop => [(12.0, 12.0), (18.9, 8.0), (12.0, 4.0), (5.1, 8.0)],
+                ViewFront => [(12.0, 20.0), (5.1, 16.0), (5.1, 8.0), (12.0, 12.0)],
+                _ => [(12.0, 20.0), (18.9, 16.0), (18.9, 8.0), (12.0, 12.0)],
+            };
+            let fill = a.gamma_multiply(0.6);
+            pen.tri([face[0], face[1], face[2]], fill);
+            pen.tri([face[0], face[2], face[3]], fill);
         }
         VisualStyle => {
             pen.c(12.0, 12.0, 8.0, b);

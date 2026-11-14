@@ -22,6 +22,8 @@ mod list;
 mod pick;
 #[cfg(feature = "solids")]
 mod view3d;
+#[cfg(feature = "solids")]
+mod view3d_overlay;
 mod viewport;
 mod widgets;
 

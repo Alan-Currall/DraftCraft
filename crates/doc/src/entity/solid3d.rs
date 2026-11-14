@@ -35,7 +35,7 @@ impl SolidLook {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Solid3d {
-    /// The exact body in SolidCraft's native format (`SCBREP04`), in the solid's own coordinates.
+    /// The exact body in solidcore's `.smb` format behind the header `DCSMB001`, in the solid's own coordinates.
     /// Not part of the entity's JSON (it is binary, and large); the drawing file keeps it.
     #[serde(skip)]
     pub body: Arc<Vec<u8>>,

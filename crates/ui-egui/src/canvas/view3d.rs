@@ -339,7 +339,7 @@ pub(super) fn show(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect, resp: &egui:
             i.pointer.delta(),
         )
     });
-    let inside = hover.is_some_and(|p| rect.contains(p));
+    let inside = hover.is_some_and(|p| rect.contains(p) && !super::view3d_overlay::covers(app, rect, &v, p));
     let orbiting_cmd = app.session.running.as_ref().is_some_and(|r| r.id == "3dorbit");
     let pr = Proj::new(&v, rect);
     if inside {
@@ -454,13 +454,7 @@ pub(super) fn show(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect, resp: &egui:
     }
     painter.extend(shapes);
     draw_axes(&painter, &pr, rect, t.text);
-    painter.text(
-        rect.left_top() + egui::vec2(8.0, 6.0),
-        egui::Align2::LEFT_TOP,
-        format!("[{}]", crate::i18n::t(v.style.label())),
-        egui::FontId::proportional(12.0),
-        t.text_dim,
-    );
+    super::view3d_overlay::show(app, ui, rect, &v, ORBIT_PER_POINT);
 
     // ---- clicks ----
     if inside

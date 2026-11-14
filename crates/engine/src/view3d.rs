@@ -9,6 +9,9 @@
 use draftcraft_doc::{Drawing, EntityKind, Space};
 use draftcraft_geom::{Vec2, Vec3};
 
+/// The preset views (View ▸ 3D Views) as (command id, label), and the one a direction is.
+pub use crate::cmd::solids::look::{PRESET_VIEWS, preset_of};
+
 /// How the 3D view draws solids (VSCURRENT). The plan view (AutoCAD's 2D Wireframe) is no 3D
 /// view at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

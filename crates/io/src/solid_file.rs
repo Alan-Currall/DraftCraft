@@ -1,7 +1,7 @@
 //! How a DraftCraft 3D solid is kept in DXF and DWG files until DraftCraft writes ACIS
 //! (docs/solids.md, "Interim file form"): a polyface mesh every CAD program can see, and in the
 //! mesh's extension dictionary an XRECORD keyed `DRAFTCRAFT_SOLID` holding the exact body in
-//! SolidCraft's native format, its placement and its counts. DraftCraft (built with solids)
+//! solidcore's exact `.smb` format (behind the 8-byte header `DCSMB001`), its placement and its counts. DraftCraft (built with solids)
 //! reopens the mesh as the solid; other programs, and DraftCraft without solids, see the mesh.
 //!
 //! A mesh larger than a polyface's 16-bit counts is written as several meshes in a row; the first
@@ -323,7 +323,6 @@ mod tests {
     use std::sync::Arc;
 
     use draftcraft_doc::{Drawing, EntityKind, Solid3d, SolidLook};
-    use draftcraft_dxf::Version;
     use draftcraft_geom::{Mat4, Vec3};
 
     /// A tetrahedron with a made-up body (the file form doesn't look inside it), placed far from
@@ -370,7 +369,7 @@ mod tests {
         let so = tetra(5000);
         let d = drawing_with(so.clone());
         let dxf = crate::write(&d, "solid.dxf").unwrap();
-        let dwg = crate::write_dwg_own(&d, Version::R2018).unwrap().0;
+        let dwg = crate::write_dwg_own(&d, draftcraft_dxf::Version::R2018).unwrap().0;
         for (bytes, name) in [(dxf, "solid.dxf"), (dwg, "solid.dwg")] {
             let back = crate::read(&bytes, name).unwrap();
             let kinds = only_kind(&back);

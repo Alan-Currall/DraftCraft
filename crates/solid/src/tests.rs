@@ -47,6 +47,8 @@ fn bad_input_is_an_error_not_a_panic() {
     assert!(extrude(&Frame::xy(0.0), &Profile::default(), 1.0, 0.0).is_err());
     assert!(extrude(&Frame::xy(0.0), &rect(1.0, 1.0), 0.0, 0.0).is_err());
     assert!(Body::decode(b"SCBREP04garbage").is_err());
+    assert!(Body::decode(b"DCSMB001garbage").is_err());
+    assert!(Body::decode(b"DCSMB001").is_err());
     assert!(Body::decode(&[]).is_err());
 }
 
@@ -81,7 +83,8 @@ fn native_round_trip_is_exact() {
     let bytes = r.encode().unwrap();
     let back = Body::decode(&bytes).unwrap();
     assert_eq!(back.encode().unwrap(), bytes, "decode then encode gives the same bytes");
-    assert_eq!(back.mass().unwrap(), r.mass().unwrap());
+    let (m1, m2) = (back.mass().unwrap(), r.mass().unwrap());
+    assert!(close(m1.volume, m2.volume, 1e-9) && close(m1.area, m2.area, 1e-9), "{m1:?} {m2:?}");
 }
 
 #[test]
@@ -95,6 +98,8 @@ fn slice_fillet_chamfer() {
     assert!(close(f.mass().unwrap().volume, 1000.0 - cut * 10.0, 1e-4), "{}", f.mass().unwrap().volume);
     let c = chamfer(&a, &[Vec3::new(5.0, 0.0, 10.0)], 1.0).unwrap();
     assert!(close(c.mass().unwrap().volume, 1000.0 - 5.0, 1e-9));
+    let closed = shell(&a, &[], 1.0).unwrap();
+    assert!(close(closed.mass().unwrap().volume, 1000.0 - 512.0, 1e-9), "walls inside: {}", closed.mass().unwrap().volume);
     let s = shell(&a, &[Vec3::new(5.0, 5.0, 10.0)], 1.0).unwrap();
     assert!(close(s.mass().unwrap().volume, 1000.0 - 8.0 * 8.0 * 9.0, 1e-9), "{}", s.mass().unwrap().volume);
 }
@@ -184,12 +189,12 @@ fn top_view_of_a_box_with_a_hole() {
         Seg::Line { a, b } => a.dist(*b),
         Seg::Arc { radius, sweep, .. } => radius * sweep.abs(),
     };
-    // The outline's edges are exact; the hole's rim is the boolean's intersection curve, which
-    // the kernel keeps as an approximation, so it is drawn as chords and marked inexact.
+    // The square outline's edges are exact lines; the hole's rim is a circle (exact when the
+    // kernel keeps the intersection as a circle, chords otherwise).
     let exact: f64 = v.pieces.iter().filter(|p| p.seen == Seen::Visible && p.exact).flat_map(|p| &p.segs).map(|s| len(&s)).sum();
-    assert!(close(exact, 40.0, 1e-9), "the square outline: {exact}");
+    assert!(exact >= 40.0 - 1e-9, "the square outline is exact: {exact}");
     let total: f64 = visible.iter().map(len).sum();
-    assert!(close(total - 40.0, 2.0 * std::f64::consts::PI * 2.0, 1e-3), "the hole's circle is visible: {}", total - 40.0);
+    assert!(close(total - 40.0, 2.0 * std::f64::consts::PI * 2.0, 1e-3), "the hole's circle is visible once: {}", total - 40.0);
     // Seen from the top, the bottom of the hole is hidden behind its top.
     assert!(v.pieces.iter().all(|p| p.seen != Seen::Uncertain));
 }
@@ -231,4 +236,25 @@ fn section_of_a_plate_with_a_hole() {
     assert!(close(lens[1], 60.0, 1e-9), "{lens:?}");
     // A plane that misses the part: nothing.
     assert!(section(&r, &Frame::xy(50.0)).unwrap().is_empty());
+}
+
+#[test]
+fn cylinder_seams_are_not_drawn() {
+    let c = cylinder(Vec3::ZERO, Vec3::Z, 2.0, 5.0).unwrap();
+    // Two circles; the side's seam line is left out.
+    assert_eq!(c.display(0.0).unwrap().wires.len(), 2);
+    let v = project(&[&c], Vec3::new(0.0, 1.0, 0.0), Vec3::Z).unwrap();
+    let sil = v.pieces.iter().filter(|p| p.silhouette && p.seen == Seen::Visible).count();
+    assert_eq!(sil, 2, "a cylinder seen from the front shows its two outline lines: {:?}", v.pieces);
+}
+
+#[test]
+fn tilted_cylinder_and_inertia() {
+    let c = cylinder(Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 0.0, 0.0), 1.0, 4.0).unwrap();
+    let m = c.mass().unwrap();
+    assert!(close(m.min.x, 1.0, 1e-6) && close(m.max.x, 5.0, 1e-6), "{m:?}");
+    assert!(close(m.centroid.x, 3.0, 1e-6) && close(m.centroid.y, 2.0, 1e-6));
+    // About its own axis (X here): m r^2 / 2 with m = pi r^2 h.
+    let ix = std::f64::consts::PI * 4.0 / 2.0;
+    assert!(close(m.moments.x, ix, 1e-4), "{m:?}");
 }

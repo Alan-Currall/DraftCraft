@@ -14,7 +14,7 @@ use super::CommandSpec;
 use crate::{EngineError, Result, Session};
 
 mod edit;
-mod look;
+pub(crate) mod look;
 mod prims;
 mod sweep;
 #[cfg(test)]

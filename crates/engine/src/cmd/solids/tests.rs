@@ -145,7 +145,13 @@ fn massprop_of_a_solid() {
     assert!(near(m["centroid"][0].as_f64().unwrap(), 2.0, 1e-9));
     assert!(near(m["centroid"][1].as_f64().unwrap(), 4.0, 1e-9));
     assert!(near(m["centroid"][2].as_f64().unwrap(), 0.5, 1e-9));
+    // A 2 x 4 x 1 box: Ixx about its centroid is m (4² + 1²) / 12, about the origin that plus
+    // m (cy² + cz²); Ixy about the origin is m cx cy.
+    assert!(near(m["centroidMoments"][0].as_f64().unwrap(), 8.0 * 17.0 / 12.0, 1e-6), "{m}");
+    assert!(near(m["momentsOfInertia"][0].as_f64().unwrap(), 8.0 * 17.0 / 12.0 + 8.0 * 16.25, 1e-6), "{m}");
+    assert!(near(m["productsOfInertia"]["xy"].as_f64().unwrap(), 64.0, 1e-6), "{m}");
     assert!(r["message"].as_str().unwrap().contains("SOLIDS"));
+    assert!(r["message"].as_str().unwrap().contains("Moments of inertia"));
 }
 
 #[test]
@@ -306,6 +312,32 @@ fn views_turn_and_go_back_to_plan_without_touching_the_drawing() {
     // Huge angles still leave a usable view.
     s.execute("3dorbit", &json!({"azimuth": 1e308, "elevation": -1e308})).unwrap();
     assert!(s.view3d().unwrap().dir.is_finite());
+}
+
+/// The preset view and style commands behind the ribbon and the viewport controls.
+#[test]
+fn preset_views_and_styles_are_commands_and_name_the_view() {
+    use crate::view3d::{PRESET_VIEWS, VisualStyle, preset_of};
+    let mut s = Session::new();
+    s.execute("box", &json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap();
+    for (id, label) in PRESET_VIEWS {
+        s.execute(id, &json!({})).unwrap();
+        assert_eq!(preset_of(s.view3d().unwrap().dir), Some((id, label)), "{id}");
+    }
+    s.execute("vpoint.front", &json!({})).unwrap();
+    assert!((s.view3d().unwrap().dir - Vec3::Y).len() < 1e-12, "front looks toward +y");
+    // A view between the presets is a custom one.
+    s.execute("3dorbit", &json!({"azimuth": 10})).unwrap();
+    assert_eq!(preset_of(s.view3d().unwrap().dir), None);
+    for (id, style) in
+        [("vscurrent.realistic", VisualStyle::Realistic), ("vscurrent.xray", VisualStyle::XRay), ("vscurrent.hidden", VisualStyle::Hidden)]
+    {
+        s.execute(id, &json!({})).unwrap();
+        assert_eq!(s.view3d().unwrap().style, style, "{id}");
+    }
+    s.execute("vscurrent.2dwireframe", &json!({})).unwrap();
+    assert!(s.view3d().is_none(), "2D Wireframe is the plan view");
+    assert_eq!(s.state().unwrap().undo.len(), 1, "only the box is undoable");
 }
 
 #[test]

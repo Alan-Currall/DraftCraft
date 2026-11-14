@@ -12,8 +12,69 @@ use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
 const VIEWS: &str = "top, bottom, front, back, left, right, swiso, seiso, neiso or nwiso";
 
+/// One preset view (View ▸ 3D Views ▸ Top … NW Isometric): VPOINT with that view, framed.
+macro_rules! preset_view {
+    ($id:literal, $label:literal, $name:literal) => {
+        CommandSpec::new($id, $label, |s: &mut Session, p: &Value| {
+            set_direction(
+                s,
+                "vpoint",
+                named_view($name).map(|(d, _)| d).unwrap_or(Vec3::new(0.0, 0.0, -1.0)),
+                p.get("fit").and_then(Value::as_bool).unwrap_or(true),
+            )
+        })
+        .menu(&["View", "3D Views", $label])
+        .params("{fit?: bool (default true)} → {direction, style}")
+        .noundo()
+    };
+}
+
+/// One visual style (View ▸ Visual Styles ▸ …): VSCURRENT with that style.
+macro_rules! preset_style {
+    ($id:literal, $label:literal, $name:literal) => {
+        CommandSpec::new($id, $label, |s: &mut Session, _p: &Value| apply_style(s, $name))
+            .menu(&["View", "Visual Styles", $label])
+            .params("{} → {style}")
+            .noundo()
+    };
+}
+
+/// The preset views and visual styles, as the viewport controls and the ribbon offer them:
+/// (command id, label).
+pub const PRESET_VIEWS: [(&str, &str); 10] = [
+    ("vpoint.top", "Top"),
+    ("vpoint.bottom", "Bottom"),
+    ("vpoint.left", "Left"),
+    ("vpoint.right", "Right"),
+    ("vpoint.front", "Front"),
+    ("vpoint.back", "Back"),
+    ("vpoint.swiso", "SW Isometric"),
+    ("vpoint.seiso", "SE Isometric"),
+    ("vpoint.neiso", "NE Isometric"),
+    ("vpoint.nwiso", "NW Isometric"),
+];
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        preset_view!("vpoint.top", "Top", "top"),
+        preset_view!("vpoint.bottom", "Bottom", "bottom"),
+        preset_view!("vpoint.left", "Left", "left"),
+        preset_view!("vpoint.right", "Right", "right"),
+        preset_view!("vpoint.front", "Front", "front"),
+        preset_view!("vpoint.back", "Back", "back"),
+        preset_view!("vpoint.swiso", "SW Isometric", "swiso"),
+        preset_view!("vpoint.seiso", "SE Isometric", "seiso"),
+        preset_view!("vpoint.neiso", "NE Isometric", "neiso"),
+        preset_view!("vpoint.nwiso", "NW Isometric", "nwiso"),
+        preset_style!("vscurrent.2dwireframe", "2D Wireframe", "2dwireframe"),
+        preset_style!("vscurrent.wireframe", "Wireframe", "wireframe"),
+        preset_style!("vscurrent.hidden", "Hidden", "hidden"),
+        preset_style!("vscurrent.realistic", "Realistic", "realistic"),
+        preset_style!("vscurrent.conceptual", "Conceptual", "conceptual"),
+        preset_style!("vscurrent.shaded", "Shaded", "shaded"),
+        preset_style!("vscurrent.shadedwithedges", "Shaded with edges", "shadedwithedges"),
+        preset_style!("vscurrent.shadesofgray", "Shades of Gray", "shadesofgray"),
+        preset_style!("vscurrent.xray", "X-Ray", "xray"),
         CommandSpec::new("vpoint", "Viewpoint", run_vpoint)
             .menu(&["View", "3D Views", "Viewpoint"])
             .params("{view?: \"top\"|\"bottom\"|\"front\"|\"back\"|\"left\"|\"right\"|\"swiso\"|\"seiso\"|\"neiso\"|\"nwiso\", point?: [x, y, z] (where the viewer is, looking toward the origin), fit?: bool (default true)} → {direction, style}")
@@ -36,6 +97,15 @@ pub fn specs() -> Vec<CommandSpec> {
             .noundo()
             .interactive(|_| Ok(Box::new(VscurrentM))),
     ]
+}
+
+/// The preset view looking along `dir` (its command id and label), if it is one.
+pub fn preset_of(dir: Vec3) -> Option<(&'static str, &'static str)> {
+    let d = dir.normalized();
+    PRESET_VIEWS
+        .iter()
+        .copied()
+        .find(|(id, _)| id.strip_prefix("vpoint.").and_then(named_view).is_some_and(|(v, _)| (v.normalized() - d).len() < 1e-6))
 }
 
 /// The 3D view as JSON.

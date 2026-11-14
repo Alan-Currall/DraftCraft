@@ -47,7 +47,7 @@ mod selecttools;
 mod settings;
 pub mod sheetset;
 #[cfg(feature = "solids")]
-mod solids;
+pub(crate) mod solids;
 mod spline_opts;
 mod table;
 mod tolerance;

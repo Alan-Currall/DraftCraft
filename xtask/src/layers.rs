@@ -37,7 +37,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("dxf", Class::Standalone),
     ("dwg", Class::Standalone),
     ("color", Class::Layer(0)),
-    // 3D solids: the facade over SolidCraft's kernel (docs/solids.md), the only crate that may
+    // 3D solids: the facade over solidcore, the B-rep kernel (docs/solids.md), the only crate that may
     // name it (KERNEL_CRATES).
     ("solid", Class::Layer(0)),
     ("doc", Class::Layer(1)),
@@ -76,7 +76,7 @@ pub const UI_CRATES: &[&str] = &["craft-ui", "egui", "eframe", "egui-wgpu", "wgp
 
 /// The solid modelling kernel's crates (docs/solids.md): only `draftcraft-solid` may depend on
 /// them, so the kernel can be pinned, patched or replaced in one place.
-pub const KERNEL_CRATES: &[&str] = &["solidcraft-kernel", "solidcraft-geom", "truck*"];
+pub const KERNEL_CRATES: &[&str] = &["solidcore*"];
 
 /// The one crate allowed to depend on [`KERNEL_CRATES`].
 pub const KERNEL_FACADE: &str = "solid";
@@ -294,11 +294,11 @@ mod tests {
 
     #[test]
     fn only_the_solid_facade_names_the_kernel() {
-        let ok = c("draftcraft-solid", &[("draftcraft-geom", Normal, true), ("solidcraft-kernel", Normal, false), ("truck-modeling", Normal, false)]);
+        let ok = c("draftcraft-solid", &[("draftcraft-geom", Normal, true), ("solidcore-ops", Normal, false), ("solidcore", Normal, false)]);
         assert!(check(&[ok]).is_empty());
-        let v = check(&[c("draftcraft-engine", &[("draftcraft-solid", Normal, true), ("solidcraft-kernel", Normal, false)])]);
+        let v = check(&[c("draftcraft-engine", &[("draftcraft-solid", Normal, true), ("solidcore-ops", Normal, false)])]);
         assert!(matches!(v[..], [Violation::KernelOutsideFacade { .. }]), "{v:?}");
-        let v = check(&[c("draftcraft-doc", &[("truck-topology", Normal, false)])]);
+        let v = check(&[c("draftcraft-doc", &[("solidcore-record", Normal, false)])]);
         assert!(matches!(v[..], [Violation::KernelOutsideFacade { .. }]), "{v:?}");
         // The facade is at L0: it may use geom, not doc.
         let v = check(&[c("draftcraft-solid", &[("draftcraft-doc", Normal, true)])]);

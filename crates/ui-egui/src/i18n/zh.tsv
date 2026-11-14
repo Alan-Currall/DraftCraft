@@ -1659,3 +1659,21 @@ menu	CAD Standards	CAD 标准
 	Shaded with edges	带边缘着色
 	Shades of Gray	灰度
 	X-Ray	X 射线
+	Back	后视
+	Bottom	仰视
+	Front	前视
+	NE Isometric	东北等轴测
+	NW Isometric	西北等轴测
+	SE Isometric	东南等轴测
+	SW Isometric	西南等轴测
+	Custom View	自定义视图
+	Hide ViewCube	隐藏 ViewCube
+	Click to view from here; drag to orbit	单击从此处查看；拖动以动态观察
+	BOTTOM	仰视
+	FRONT	前视
+	BACK	后视
+	LEFT	左视
+	RIGHT	右视
+	Visualize	可视化
+	Primitive	图元
+	Views	视图

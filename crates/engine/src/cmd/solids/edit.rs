@@ -129,13 +129,27 @@ pub(crate) fn try_massprop(s: &mut Session, hs: &[Handle]) -> Result<Option<Valu
         let (body, o) = world_body(so)?;
         let m = body.mass().map_err(super::kernel)?;
         let (c, lo, hi) = (m.centroid + o, m.min + o, m.max + o);
+        // The kernel gives moments and products about the centroid; MASSPROP reports them about
+        // the world origin too (parallel axes), with the radii of gyration.
+        let mass = m.volume;
+        let moments = [
+            m.moments.x + mass * (c.y * c.y + c.z * c.z),
+            m.moments.y + mass * (c.z * c.z + c.x * c.x),
+            m.moments.z + mass * (c.x * c.x + c.y * c.y),
+        ];
+        let products = [m.products.z + mass * c.x * c.y, m.products.x + mass * c.y * c.z, m.products.y + mass * c.z * c.x];
+        let radius = |i: f64| if mass > 0.0 && i >= 0.0 { (i / mass).sqrt() } else { 0.0 };
+        let radii = [radius(moments[0]), radius(moments[1]), radius(moments[2])];
         out.push(json!({
-            "handle": h.hex(), "mass": m.volume, "volume": m.volume, "area": m.area,
+            "handle": h.hex(), "mass": mass, "volume": m.volume, "area": m.area,
             "boundingBox": [[lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]], "centroid": [c.x, c.y, c.z],
+            "momentsOfInertia": moments, "productsOfInertia": { "xy": products[0], "yz": products[1], "zx": products[2] },
+            "radiiOfGyration": radii,
+            "centroidMoments": [m.moments.x, m.moments.y, m.moments.z],
         }));
         lines.push(format!(
-            "----------------   SOLIDS   ----------------\nMass:                    {}\nVolume:                  {}\nSurface area:            {}\nBounding box:         X: {}  --  {}\n                      Y: {}  --  {}\n                      Z: {}  --  {}\nCentroid:             X: {}\n                      Y: {}\n                      Z: {}\n(Mass at density 1. Moments of inertia of solids are not available yet.)",
-            f(m.volume),
+            "----------------   SOLIDS   ----------------\nMass:                    {}\nVolume:                  {}\nSurface area:            {}\nBounding box:         X: {}  --  {}\n                      Y: {}  --  {}\n                      Z: {}  --  {}\nCentroid:             X: {}\n                      Y: {}\n                      Z: {}\nMoments of inertia:   X: {}\n                      Y: {}\n                      Z: {}\nProducts of inertia: XY: {}\n                     YZ: {}\n                     ZX: {}\nRadii of gyration:    X: {}\n                      Y: {}\n                      Z: {}\nMoments about the centroid: X: {}  Y: {}  Z: {}\n(Mass at density 1.)",
+            f(mass),
             f(m.volume),
             f(m.area),
             f(lo.x),
@@ -147,6 +161,18 @@ pub(crate) fn try_massprop(s: &mut Session, hs: &[Handle]) -> Result<Option<Valu
             f(c.x),
             f(c.y),
             f(c.z),
+            f(moments[0]),
+            f(moments[1]),
+            f(moments[2]),
+            f(products[0]),
+            f(products[1]),
+            f(products[2]),
+            f(radii[0]),
+            f(radii[1]),
+            f(radii[2]),
+            f(m.moments.x),
+            f(m.moments.y),
+            f(m.moments.z),
         ));
     }
     Ok(Some(json!({ "solids": out, "message": lines.join("\n") })))

@@ -226,53 +226,169 @@ fn slide_out(tab: &str, title: &str) -> &'static [Tool] {
     SLIDE_OUTS.iter().find(|(t, p, _)| *t == tab && *p == title).map_or(&[], |s| s.2)
 }
 
-/// The ribbon's tabs, in order: Home, then the 3D Modeling tab when DraftCraft is built with
-/// solids, then the others.
+/// Every ribbon tab: those of the 2D Drafting workspace, then those only the 3D Modeling
+/// workspace shows (built with solids). Tools are looked up here.
 pub(crate) fn tabs() -> impl Iterator<Item = &'static RibbonTab> + Clone {
-    let (home, rest) = TABS.split_at(TABS.len().min(1));
-    home.iter().chain(SOLID_TABS).chain(rest)
+    TABS.iter().chain(SOLID_TABS)
 }
 
-/// 3D solids (docs/solids.md): what AutoCAD's 3D Modeling workspace has on its Home tab.
+/// The built-in 3D workspace (built with solids), as AutoCAD's: its own Home tab, then Solid
+/// and Visualize, then the other tabs of 2D Drafting.
+pub const WORKSPACE_3D: &str = "3D Modeling";
+
+/// The tabs of the current workspace, in order: in 3D Modeling the 3D tabs take the place of
+/// 2D Drafting's Home tab; every other workspace has 2D Drafting's tabs.
+pub(crate) fn workspace_tabs(app: &CadApp) -> Vec<&'static RibbonTab> {
+    let in_3d = !SOLID_TABS.is_empty() && crate::workspaces::current(app) == WORKSPACE_3D;
+    if in_3d { SOLID_TABS.iter().chain(TABS.iter().skip(1)).collect() } else { TABS.iter().collect() }
+}
+
+/// 3D solids (docs/solids.md): the tabs AutoCAD's 3D Modeling workspace puts first.
 #[cfg(feature = "solids")]
-const SOLID_TABS: &[RibbonTab] = &[RibbonTab {
-    name: "3D Modeling",
-    panels: &[
-        RibbonPanel {
-            title: "Modeling",
-            cols: &[
-                Large(d(Icon::Box3d, "box", "Box", PRIMITIVE_MORE)),
-                Large(d(Icon::Extrude, "extrude", "Extrude", SWEEP_MORE)),
-                Icons(&[b(Icon::Cylinder, "cylinder", "Cylinder"), b(Icon::Sphere, "sphere", "Sphere"), b(Icon::Cone, "cone", "Cone")]),
-                Icons(&[b(Icon::Torus, "torus", "Torus"), b(Icon::Wedge, "wedge", "Wedge"), b(Icon::Revolve, "revolve", "Revolve")]),
-            ],
-        },
-        RibbonPanel {
-            title: "Solid Editing",
-            cols: &[
-                Large(d(Icon::Union, "union", "Union", BOOLEAN_MORE)),
-                Icons(&[
-                    b(Icon::Subtract, "subtract", "Subtract"),
-                    b(Icon::Intersect, "intersect", "Intersect"),
-                    b(Icon::Interfere, "interfere", "Interference Checking"),
-                ]),
-                Icons(&[b(Icon::Slice, "slice", "Slice"), b(Icon::Shell, "solidedit", "Shell"), b(Icon::FilletEdge, "filletedge", "Fillet Edge")]),
-                Icons(&[b(Icon::ChamferEdge, "chamferedge", "Chamfer Edge")]),
-            ],
-        },
-        RibbonPanel { title: "Section", cols: &[Large(b(Icon::SectionCut, "section", "Section")), Large(b(Icon::Flatshot, "flatshot", "Flatshot"))] },
-        RibbonPanel {
-            title: "View",
-            cols: &[
-                Large(b(Icon::VisualStyle, "vscurrent", "Visual Styles")),
-                Large(b(Icon::ViewIso, "vpoint", "Viewpoint")),
-                Icons(&[b(Icon::Orbit, "3dorbit", "Orbit"), b(Icon::PlanView, "plan", "Plan View")]),
-            ],
-        },
-    ],
-}];
+const SOLID_TABS: &[RibbonTab] = &[
+    RibbonTab {
+        name: "Home",
+        panels: &[
+            RibbonPanel {
+                title: "Modeling",
+                cols: &[
+                    Large(d(Icon::Box3d, "box", "Box", PRIMITIVE_MORE)),
+                    Large(d(Icon::Extrude, "extrude", "Extrude", SWEEP_MORE)),
+                    Icons(&[b(Icon::Revolve, "revolve", "Revolve"), b(Icon::Cylinder, "cylinder", "Cylinder"), b(Icon::Sphere, "sphere", "Sphere")]),
+                ],
+            },
+            RibbonPanel {
+                title: "Solid Editing",
+                cols: &[
+                    Large(d(Icon::Union, "union", "Union", BOOLEAN_MORE)),
+                    Icons(&[
+                        b(Icon::Slice, "slice", "Slice"),
+                        b(Icon::Interfere, "interfere", "Interference Checking"),
+                        b(Icon::Shell, "solidedit", "Shell"),
+                    ]),
+                    Icons(&[d(Icon::FilletEdge, "filletedge", "Fillet Edge", EDGE_MORE)]),
+                ],
+            },
+            HOME_DRAW,
+            HOME_MODIFY,
+            RibbonPanel {
+                title: "Section",
+                cols: &[Large(b(Icon::SectionCut, "section", "Section")), Icons(&[b(Icon::Flatshot, "flatshot", "Flatshot")])],
+            },
+            RibbonPanel {
+                title: "View",
+                cols: &[
+                    Large(d(Icon::VisualStyle, "vscurrent", "Visual Styles", STYLE_MORE)),
+                    Icons(&[
+                        d(Icon::ViewIso, "vpoint.seiso", "SE Isometric", VIEW_MORE),
+                        b(Icon::Orbit, "3dorbit", "Orbit"),
+                        b(Icon::PlanView, "plan", "Plan View"),
+                    ]),
+                ],
+            },
+            HOME_LAYERS,
+        ],
+    },
+    RibbonTab {
+        name: "Solid",
+        panels: &[
+            RibbonPanel {
+                title: "Primitive",
+                cols: &[
+                    Large(d(Icon::Box3d, "box", "Box", PRIMITIVE_MORE)),
+                    Icons(&[b(Icon::Cylinder, "cylinder", "Cylinder"), b(Icon::Cone, "cone", "Cone"), b(Icon::Sphere, "sphere", "Sphere")]),
+                    Icons(&[b(Icon::Wedge, "wedge", "Wedge"), b(Icon::Torus, "torus", "Torus")]),
+                ],
+            },
+            RibbonPanel { title: "Solid", cols: &[Large(b(Icon::Extrude, "extrude", "Extrude")), Large(b(Icon::Revolve, "revolve", "Revolve"))] },
+            RibbonPanel {
+                title: "Boolean",
+                cols: &[
+                    Large(b(Icon::Union, "union", "Union")),
+                    Icons(&[
+                        b(Icon::Subtract, "subtract", "Subtract"),
+                        b(Icon::Intersect, "intersect", "Intersect"),
+                        b(Icon::Interfere, "interfere", "Interference Checking"),
+                    ]),
+                ],
+            },
+            RibbonPanel {
+                title: "Solid Editing",
+                cols: &[
+                    Large(b(Icon::Slice, "slice", "Slice")),
+                    Icons(&[
+                        b(Icon::FilletEdge, "filletedge", "Fillet Edge"),
+                        b(Icon::ChamferEdge, "chamferedge", "Chamfer Edge"),
+                        b(Icon::Shell, "solidedit", "Shell"),
+                    ]),
+                ],
+            },
+            RibbonPanel {
+                title: "Section",
+                cols: &[Large(b(Icon::SectionCut, "section", "Section")), Large(b(Icon::Flatshot, "flatshot", "Flatshot"))],
+            },
+        ],
+    },
+    RibbonTab {
+        name: "Visualize",
+        panels: &[
+            RibbonPanel {
+                title: "Views",
+                cols: &[
+                    Large(d(Icon::ViewIso, "vpoint.seiso", "SE Isometric", VIEW_MORE)),
+                    Icons(&[
+                        b(Icon::ViewTop, "vpoint.top", "Top"),
+                        b(Icon::ViewFront, "vpoint.front", "Front"),
+                        b(Icon::ViewRight, "vpoint.right", "Right"),
+                    ]),
+                    Icons(&[b(Icon::ViewIso, "vpoint", "Viewpoint"), b(Icon::Orbit, "3dorbit", "Orbit"), b(Icon::PlanView, "plan", "Plan View")]),
+                ],
+            },
+            RibbonPanel {
+                title: "Visual Styles",
+                cols: &[
+                    Large(d(Icon::VisualStyle, "vscurrent", "Visual Styles", STYLE_MORE)),
+                    Icons(&[
+                        b(Icon::VisualStyle, "vscurrent.wireframe", "Wireframe"),
+                        b(Icon::VisualStyle, "vscurrent.hidden", "Hidden"),
+                        b(Icon::VisualStyle, "vscurrent.realistic", "Realistic"),
+                    ]),
+                ],
+            },
+        ],
+    },
+];
 #[cfg(not(feature = "solids"))]
 const SOLID_TABS: &[RibbonTab] = &[];
+
+#[cfg(feature = "solids")]
+const EDGE_MORE: &[Tool] = &[(Icon::FilletEdge, "filletedge", "Fillet Edge"), (Icon::ChamferEdge, "chamferedge", "Chamfer Edge")];
+#[cfg(feature = "solids")]
+const VIEW_MORE: &[Tool] = &[
+    (Icon::ViewTop, "vpoint.top", "Top"),
+    (Icon::ViewTop, "vpoint.bottom", "Bottom"),
+    (Icon::ViewRight, "vpoint.left", "Left"),
+    (Icon::ViewRight, "vpoint.right", "Right"),
+    (Icon::ViewFront, "vpoint.front", "Front"),
+    (Icon::ViewFront, "vpoint.back", "Back"),
+    SEP,
+    (Icon::ViewIso, "vpoint.swiso", "SW Isometric"),
+    (Icon::ViewIso, "vpoint.seiso", "SE Isometric"),
+    (Icon::ViewIso, "vpoint.neiso", "NE Isometric"),
+    (Icon::ViewIso, "vpoint.nwiso", "NW Isometric"),
+];
+#[cfg(feature = "solids")]
+const STYLE_MORE: &[Tool] = &[
+    (Icon::VisualStyle, "vscurrent.2dwireframe", "2D Wireframe"),
+    (Icon::VisualStyle, "vscurrent.wireframe", "Wireframe"),
+    (Icon::VisualStyle, "vscurrent.hidden", "Hidden"),
+    (Icon::VisualStyle, "vscurrent.realistic", "Realistic"),
+    (Icon::VisualStyle, "vscurrent.conceptual", "Conceptual"),
+    (Icon::VisualStyle, "vscurrent.shaded", "Shaded"),
+    (Icon::VisualStyle, "vscurrent.shadedwithedges", "Shaded with edges"),
+    (Icon::VisualStyle, "vscurrent.shadesofgray", "Shades of Gray"),
+    (Icon::VisualStyle, "vscurrent.xray", "X-Ray"),
+];
 
 #[cfg(feature = "solids")]
 const PRIMITIVE_MORE: &[Tool] = &[
@@ -289,38 +405,65 @@ const SWEEP_MORE: &[Tool] = &[(Icon::Extrude, "extrude", "Extrude"), (Icon::Revo
 const BOOLEAN_MORE: &[Tool] =
     &[(Icon::Union, "union", "Union"), (Icon::Subtract, "subtract", "Subtract"), (Icon::Intersect, "intersect", "Intersect")];
 
+/// The Home tab's panels that the 3D Modeling workspace's Home tab shows too.
+const HOME_DRAW: RibbonPanel = RibbonPanel {
+    title: "Draw",
+    cols: &[
+        Large(b(Icon::Line, "line", "Line")),
+        Large(b(Icon::Polyline, "pline", "Polyline")),
+        Large(d(Icon::Circle, "circle", "Circle", CIRCLE_MORE)),
+        Large(d(Icon::Arc, "arc", "Arc", ARC_MORE)),
+        Icons(&[
+            d(Icon::Rectangle, "rectang", "Rectangle", RECT_MORE),
+            d(Icon::Ellipse, "ellipse", "Ellipse", ELLIPSE_MORE),
+            d(Icon::Hatch, "hatch", "Hatch", HATCH_MORE),
+        ]),
+        Icons(&[d(Icon::Spline, "spline", "Spline Fit", SPLINE_MORE), b(Icon::Conic, "conic", "Conic")]),
+    ],
+};
+const HOME_MODIFY: RibbonPanel = RibbonPanel {
+    title: "Modify",
+    cols: &[
+        Small(&[b(Icon::Move, "move", "Move"), b(Icon::Copy, "copy", "Copy"), b(Icon::Stretch, "stretch", "Stretch")]),
+        Small(&[b(Icon::Rotate, "rotate", "Rotate"), b(Icon::Mirror, "mirror", "Mirror"), b(Icon::Scale, "scale", "Scale")]),
+        Icons(&[
+            d(Icon::Trim, "trim", "Trim", TRIM_MORE),
+            d(Icon::Fillet, "fillet", "Fillet", FILLET_MORE),
+            d(Icon::ArrayRect, "arrayrect", "Array", ARRAY_MORE),
+        ]),
+        Icons(&[b(Icon::Erase, "erase", "Erase"), b(Icon::Explode, "explode", "Explode"), b(Icon::Offset, "offset", "Offset")]),
+    ],
+};
+const HOME_LAYERS: RibbonPanel = RibbonPanel {
+    title: "Layers",
+    cols: &[
+        Large(b(Icon::LayerProps, "ui.dialog.layers", "Layer Properties")),
+        Layers(
+            [
+                &[
+                    b(Icon::LayerOff, "layoff", "Off"),
+                    b(Icon::LayerIso, "layiso", "Isolate"),
+                    b(Icon::LayerFreeze, "layfrz", "Freeze"),
+                    b(Icon::LayerLock, "laylck", "Lock"),
+                ],
+                &[
+                    b(Icon::Bulb, "layon", "Turn All Layers On"),
+                    b(Icon::LayerPrev, "layuniso", "Unisolate"),
+                    b(Icon::Sun, "laythw", "Thaw All Layers"),
+                    b(Icon::Unlock, "layulk", "Unlock"),
+                ],
+            ],
+            [b(Icon::MakeCurrent, "laymcur", "Make Current"), b(Icon::LayerMatch, "laymch", "Match Layer")],
+        ),
+    ],
+};
+
 const TABS: &[RibbonTab] = &[
     RibbonTab {
         name: "Home",
         panels: &[
-            RibbonPanel {
-                title: "Draw",
-                cols: &[
-                    Large(b(Icon::Line, "line", "Line")),
-                    Large(b(Icon::Polyline, "pline", "Polyline")),
-                    Large(d(Icon::Circle, "circle", "Circle", CIRCLE_MORE)),
-                    Large(d(Icon::Arc, "arc", "Arc", ARC_MORE)),
-                    Icons(&[
-                        d(Icon::Rectangle, "rectang", "Rectangle", RECT_MORE),
-                        d(Icon::Ellipse, "ellipse", "Ellipse", ELLIPSE_MORE),
-                        d(Icon::Hatch, "hatch", "Hatch", HATCH_MORE),
-                    ]),
-                    Icons(&[d(Icon::Spline, "spline", "Spline Fit", SPLINE_MORE), b(Icon::Conic, "conic", "Conic")]),
-                ],
-            },
-            RibbonPanel {
-                title: "Modify",
-                cols: &[
-                    Small(&[b(Icon::Move, "move", "Move"), b(Icon::Copy, "copy", "Copy"), b(Icon::Stretch, "stretch", "Stretch")]),
-                    Small(&[b(Icon::Rotate, "rotate", "Rotate"), b(Icon::Mirror, "mirror", "Mirror"), b(Icon::Scale, "scale", "Scale")]),
-                    Icons(&[
-                        d(Icon::Trim, "trim", "Trim", TRIM_MORE),
-                        d(Icon::Fillet, "fillet", "Fillet", FILLET_MORE),
-                        d(Icon::ArrayRect, "arrayrect", "Array", ARRAY_MORE),
-                    ]),
-                    Icons(&[b(Icon::Erase, "erase", "Erase"), b(Icon::Explode, "explode", "Explode"), b(Icon::Offset, "offset", "Offset")]),
-                ],
-            },
+            HOME_DRAW,
+            HOME_MODIFY,
             RibbonPanel {
                 title: "Annotation",
                 cols: &[
@@ -333,29 +476,7 @@ const TABS: &[RibbonTab] = &[
                     ]),
                 ],
             },
-            RibbonPanel {
-                title: "Layers",
-                cols: &[
-                    Large(b(Icon::LayerProps, "ui.dialog.layers", "Layer Properties")),
-                    Layers(
-                        [
-                            &[
-                                b(Icon::LayerOff, "layoff", "Off"),
-                                b(Icon::LayerIso, "layiso", "Isolate"),
-                                b(Icon::LayerFreeze, "layfrz", "Freeze"),
-                                b(Icon::LayerLock, "laylck", "Lock"),
-                            ],
-                            &[
-                                b(Icon::Bulb, "layon", "Turn All Layers On"),
-                                b(Icon::LayerPrev, "layuniso", "Unisolate"),
-                                b(Icon::Sun, "laythw", "Thaw All Layers"),
-                                b(Icon::Unlock, "layulk", "Unlock"),
-                            ],
-                        ],
-                        [b(Icon::MakeCurrent, "laymcur", "Make Current"), b(Icon::LayerMatch, "laymch", "Match Layer")],
-                    ),
-                ],
-            },
+            HOME_LAYERS,
             RibbonPanel {
                 title: "Block",
                 cols: &[
@@ -1240,7 +1361,10 @@ fn app_bar(app: &mut CadApp, ui: &mut egui::Ui, bar: Rect, out: &mut Out) {
     p.rect_filled(ws, 2.0, if wresp.hovered() { t.control } else { t.chrome_dark });
     p.rect_stroke(ws, 2.0, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     let current = crate::workspaces::current(app);
-    let shown = if current == crate::workspaces::BUILT_IN { crate::i18n::t(crate::workspaces::BUILT_IN).to_string() } else { current.clone() };
+    let shown = match crate::workspaces::built_in(&current) {
+        Some(b) => crate::i18n::t(b).to_string(),
+        None => current.clone(),
+    };
     p.with_clip_rect(ws.shrink(2.0)).text(pos2(ws.left() + 7.0, cy), Align2::LEFT_CENTER, shown, label_font(), t.text);
     arrow(&p, pos2(ws.right() - 9.0, cy), t.text);
     icons::describe_control(ui, &wresp, "Workspace", None, false);
@@ -1248,7 +1372,10 @@ fn app_bar(app: &mut CadApp, ui: &mut egui::Ui, bar: Rect, out: &mut Out) {
     let mut switch_to: Option<String> = None;
     egui::Popup::menu(&wresp).show(|ui| {
         for n in &names {
-            let label = if n == crate::workspaces::BUILT_IN { crate::i18n::t(n).to_string() } else { n.clone() };
+            let label = match crate::workspaces::built_in(n) {
+                Some(b) => crate::i18n::t(b).to_string(),
+                None => n.clone(),
+            };
             if ui.selectable_label(*n == current, label).clicked() && *n != current {
                 switch_to = Some(n.clone());
                 ui.close();
@@ -1352,12 +1479,18 @@ fn fit_panels(p: &egui::Painter, tab: &RibbonTab, available: f32) -> (Vec<bool>,
 /// The tabs the ribbon shows now: the standard ones, then the contextual tab the app's state
 /// calls for ([`context`]).
 fn shown_tabs(app: &CadApp) -> Vec<&'static RibbonTab> {
-    tabs().filter(|tab| !app.ui.hidden_tabs.iter().any(|h| h == tab.name)).chain(context::current(app)).collect()
+    workspace_tabs(app).into_iter().filter(|tab| !app.ui.hidden_tabs.iter().any(|h| h == tab.name)).chain(context::current(app)).collect()
 }
 
 /// The standard ribbon tabs' names (CUI shows or hides them).
 pub(crate) fn tab_names() -> Vec<&'static str> {
-    tabs().map(|tab| tab.name).collect()
+    let mut names: Vec<&'static str> = Vec::new();
+    for t in tabs() {
+        if !names.contains(&t.name) {
+            names.push(t.name);
+        }
+    }
+    names
 }
 
 /// The Quick Access Toolbar's tools: the customized ones (CUI), else the standard ones.
