@@ -78,15 +78,24 @@ pub(super) fn common(w: &mut W, e: &Entity, owner: &str, paper: bool, subclass: 
 
 /// Common entity groups; `assoc` adds the reactor and extension dictionary of a DIMASSOC.
 pub(super) fn common_x(w: &mut W, e: &Entity, owner: &str, paper: bool, subclass: &str, assoc: Option<&AssocObj>) {
+    common_full(w, e, owner, paper, subclass, assoc.map(|a| a.handle.as_str()), assoc.map(|a| a.xdict.as_str()));
+}
+
+/// Common entity groups with an extension dictionary of our own (a solid's record, `solid_file`).
+pub(super) fn common_xd(w: &mut W, e: &Entity, owner: &str, paper: bool, subclass: &str, xdict: Option<&str>) {
+    common_full(w, e, owner, paper, subclass, None, xdict);
+}
+
+fn common_full(w: &mut W, e: &Entity, owner: &str, paper: bool, subclass: &str, reactor: Option<&str>, xdict: Option<&str>) {
     w.s(5, e.handle.hex());
-    let mut reactors: Vec<String> = assoc.map(|a| a.handle.clone()).into_iter().collect();
+    let mut reactors: Vec<String> = reactor.map(str::to_string).into_iter().collect();
     reactors.extend(w.reactors.get(&e.handle).into_iter().flatten().cloned());
     if !reactors.is_empty() {
         let rs: Vec<&str> = reactors.iter().map(String::as_str).collect();
         w.group("ACAD_REACTORS", 330, &rs);
     }
-    if let Some(a) = assoc {
-        w.group("ACAD_XDICTIONARY", 360, &[&a.xdict]);
+    if let Some(x) = xdict {
+        w.group("ACAD_XDICTIONARY", 360, &[x]);
     }
     w.s(330, owner);
     w.s(100, "AcDbEntity");

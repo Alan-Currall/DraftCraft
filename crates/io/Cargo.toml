@@ -27,6 +27,11 @@ quick-xml = { workspace = true }
 image = { workspace = true }
 chrono = { workspace = true }
 
+[features]
+# 3D solids (docs/solids.md): reopen the meshes DraftCraft saved for its solids as solids. Writing
+# them needs no feature (a drawing without the feature has no solids to write).
+solids = []
+
 [dev-dependencies]
 tiny-skia = { workspace = true }
 # Reads plotted PDFs back.

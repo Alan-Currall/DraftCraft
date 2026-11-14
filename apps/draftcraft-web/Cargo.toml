@@ -26,6 +26,11 @@ log = { workspace = true }
 serde_json = { workspace = true }
 
 # File > Open… and dropped files (src/upload.rs): the browser's file picker and file reads.
+
+[features]
+# 3D solids (docs/solids.md): off by default; without it nothing changes.
+solids = ["draftcraft-engine/solids", "draftcraft-io/solids", "draftcraft-ui-egui/solids"]
+
 [target.wasm32-unknown-unknown.dependencies]
 web-sys = { version = "0.3", features = ["HtmlInputElement", "FileList", "File"] }
 

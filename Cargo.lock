@@ -1355,6 +1355,7 @@ dependencies = [
  "draftcraft-geom",
  "draftcraft-io",
  "draftcraft-render",
+ "draftcraft-solid",
  "encoding_rs",
  "libc",
  "log",

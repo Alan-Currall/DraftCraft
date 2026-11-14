@@ -333,6 +333,7 @@ pub fn write_dxf(d: &Drawing) -> String {
 
 /// Regions, written as closed polylines.
 mod dxf_region;
+mod solid_file;
 
 #[cfg(test)]
 mod tests;

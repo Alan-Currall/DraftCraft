@@ -22,6 +22,46 @@ mod views;
 
 pub(crate) use edit::{try_boolean, try_massprop, try_subtract};
 
+/// Most solids whose look an opened drawing gets from their bodies; the others keep the look of
+/// their saved meshes.
+const MAX_REFRESHED: usize = 100_000;
+
+/// Give every solid of `d` the look its exact body has (a solid read from a file has the look of
+/// the mesh it was saved with). A body that can't be read keeps the mesh's look.
+pub(crate) fn refresh_looks(d: &mut draftcraft_doc::Drawing) {
+    let mut n = 0usize;
+    let mut fix = |st: &mut draftcraft_doc::EntityStore| {
+        let hs: Vec<Handle> = st.iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_))).map(|e| e.handle).collect();
+        for h in hs {
+            if n >= MAX_REFRESHED {
+                return;
+            }
+            n += 1;
+            let Some(EntityKind::Solid3d(so)) = st.get(h).map(|e| &e.kind) else { continue };
+            let Ok(body) = Body::decode(&so.body) else { continue };
+            let Ok(look) = body.display(0.0) else { continue };
+            if look.triangles.len() > MAX_LOOK_TRIANGLES {
+                continue;
+            }
+            let look = SolidLook { wires: look.wires, positions: look.positions, triangles: look.triangles, tri_face: look.tri_face };
+            st.modify(h, |e| {
+                if let EntityKind::Solid3d(so) = &mut e.kind {
+                    so.look = std::sync::Arc::new(look);
+                }
+            });
+        }
+    };
+    fix(&mut d.model);
+    for l in &mut d.layouts {
+        fix(&mut l.entities);
+    }
+    for b in d.blocks.values_mut() {
+        if b.entities.iter().any(|e| matches!(e.kind, EntityKind::Solid3d(_))) {
+            fix(&mut std::sync::Arc::make_mut(b).entities);
+        }
+    }
+}
+
 /// The solids commands.
 pub fn specs() -> Vec<CommandSpec> {
     let mut v = prims::specs();

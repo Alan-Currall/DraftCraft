@@ -353,7 +353,11 @@ pub fn finish_open(s: &mut Session, f: ReadFile) -> Result<Value> {
 
 fn read_bytes(bytes: &[u8], name: &str, path: Option<String>) -> Result<ReadFile> {
     let hooks = io().ok_or_else(|| bad("open", "file formats are not available in this build"))?;
-    let drawing = (hooks.read)(bytes, name).map_err(|e| bad("open", e))?;
+    #[cfg_attr(not(feature = "solids"), allow(unused_mut))]
+    let mut drawing = (hooks.read)(bytes, name).map_err(|e| bad("open", e))?;
+    // A solid read back from its file form has the look of its mesh: draw it from the body.
+    #[cfg(feature = "solids")]
+    super::solids::refresh_looks(&mut drawing);
     // A file that isn't a drawing (an imported SVG) gives the drawing no file name: QSAVE then
     // asks where to save instead of exporting over the original.
     let path = path.filter(|p| is_drawing_file(p));
@@ -905,6 +909,9 @@ pub fn loss_on_save(s: &Session, path: &str) -> std::collections::BTreeMap<Strin
 
 /// Report what the file `path`, just written at the drawing's own version, left out.
 pub(super) fn report_loss(s: &mut Session, r: &mut Value, path: &str) {
+    if is_drawing_file(path) {
+        report_solids_as_meshes(s, r);
+    }
     if is_dxf_file(path) {
         if drawing_version(s, path) >= Version::R2013 {
             report_sat_text_dropped(s, r);
@@ -933,6 +940,29 @@ fn is_drawing_file(path: impl AsRef<std::path::Path>) -> bool {
 /// Whether `path` is a DXF file.
 fn is_dxf_file(path: impl AsRef<std::path::Path>) -> bool {
     Format::from_path(path) == Some(Format::Dxf)
+}
+
+/// DraftCraft's 3D solids in the drawing, across model space, layouts and block definitions.
+fn solid_count(s: &Session) -> usize {
+    let Ok(st) = s.state() else { return 0 };
+    let d = st.drawing();
+    let stores = std::iter::once(&d.model).chain(d.layouts.iter().map(|l| &l.entities)).chain(d.blocks.values().map(|b| &b.entities));
+    stores.map(|st| st.iter().filter(|e| matches!(e.kind, draftcraft_doc::EntityKind::Solid3d(_))).count()).sum()
+}
+
+/// Say that 3D solids go into DXF and DWG as meshes with the exact body beside them, until
+/// DraftCraft writes ACIS (docs/solids.md): other programs see the meshes.
+fn report_solids_as_meshes(s: &mut Session, r: &mut Value) {
+    let n = solid_count(s);
+    if n == 0 {
+        return;
+    }
+    s.echo(format!(
+        "{n} 3D solid(s) saved as polyface meshes with DraftCraft's exact body attached: DraftCraft reopens them as solids; AutoCAD and other programs see meshes."
+    ));
+    if let Some(o) = r.as_object_mut() {
+        o.insert("solidsAsMeshes".into(), json!(n));
+    }
 }
 
 /// Say on the command line which solid modeler entities a DXF of 2013 or later left out because

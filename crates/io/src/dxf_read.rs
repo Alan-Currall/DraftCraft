@@ -167,6 +167,8 @@ fn read_budgeted(bytes: &[u8], mut table_cells_left: usize) -> Result<Drawing> {
     }
     crate::dxf_raw::read(&secs, &mut d);
     crate::dxf_clip::read(&mut d);
+    #[cfg(feature = "solids")]
+    crate::solid_file::recover(&mut d);
     d.skipped_records = skipped;
     Ok(d)
 }

@@ -243,3 +243,27 @@ fn move_rotate_mirror_scale_keep_the_body() {
     let w = after.world(Vec3::new(0.5, 1.0, 0.0));
     assert!(near(w.x, -100.5, 1e-9) && near(w.y, 51.0, 1e-9), "{w:?}");
 }
+
+#[test]
+fn an_opened_solid_gets_the_look_of_its_body() {
+    let mut s = Session::new();
+    let a = h(&s.execute("box", &json!({"corner1": [0, 0], "corner2": [1, 1], "height": 1})).unwrap());
+    let mut d = s.doc().unwrap().clone();
+    let good = solid(&s, &a).look.clone();
+    let hd = d.model.iter().find(|e| e.handle.hex() == a).unwrap().handle;
+    d.model.modify(hd, |e| {
+        if let EntityKind::Solid3d(so) = &mut e.kind {
+            so.look = std::sync::Arc::new(draftcraft_doc::SolidLook::default());
+        }
+    });
+    super::refresh_looks(&mut d);
+    let EntityKind::Solid3d(so) = &d.model.get(hd).unwrap().kind else { panic!() };
+    assert_eq!(so.look, good);
+    // A body that can't be read keeps what it has.
+    d.model.modify(hd, |e| {
+        if let EntityKind::Solid3d(so) = &mut e.kind {
+            so.body = std::sync::Arc::new(vec![1, 2, 3]);
+        }
+    });
+    super::refresh_looks(&mut d);
+}
