@@ -52,6 +52,11 @@ fn guarded<T>(what: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
 /// own origin by the caller, with a placement (docs/solids.md, "Units and scale").
 pub const MAX_SIZE: f64 = 1e7;
 
+/// A size the kernel can work with: finite and more than its tolerance.
+fn positive(v: f64) -> bool {
+    v.is_finite() && v > 1e-9
+}
+
 fn finite(v: f64, what: &str) -> Result<f64> {
     if v.is_finite() && v.abs() < MAX_SIZE { Ok(v) } else { Err(err(format!("{what} must be a finite number below {MAX_SIZE}"))) }
 }
@@ -231,7 +236,7 @@ pub fn box_solid(a: Vec3, b: Vec3) -> Result<Body> {
 pub fn cylinder(base: Vec3, axis: Vec3, radius: f64, height: f64) -> Result<Body> {
     let (base, axis) = (point(base, "the base centre")?, point(axis, "the axis")?);
     let (radius, height) = (finite(radius, "the radius")?, finite(height, "the height")?);
-    if !(height > 1e-9) {
+    if !positive(height) {
         return Err(err("the height must be positive"));
     }
     guarded("cylinder", || Ok(Body(k::cylinder(base, axis, radius, height)?)))
@@ -260,7 +265,7 @@ pub fn cone(base: Vec3, axis: Vec3, radius: f64, top_radius: f64, height: f64) -
 /// A sphere.
 pub fn sphere(center: Vec3, radius: f64) -> Result<Body> {
     let (center, radius) = (point(center, "the centre")?, finite(radius, "the radius")?);
-    if !(radius > 1e-9) {
+    if !positive(radius) {
         return Err(err("the radius must be positive"));
     }
     guarded("sphere", || Ok(Body(k::sphere(center, radius)?)))
@@ -330,7 +335,7 @@ pub fn slice(body: &Body, origin: Vec3, normal: Vec3) -> Result<(Option<Body>, O
 pub fn fillet(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
     let pts = edges.iter().map(|p| point(*p, "an edge point")).collect::<Result<Vec<_>>>()?;
     let radius = finite(radius, "the radius")?;
-    if pts.is_empty() || !(radius > 1e-9) {
+    if pts.is_empty() || !positive(radius) {
         return Err(err("select edges and give a positive radius"));
     }
     guarded("fillet", || Ok(Body(k::fillet(&body.0, &pts, radius)?)))
@@ -340,7 +345,7 @@ pub fn fillet(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
 pub fn chamfer(body: &Body, edges: &[Vec3], distance: f64) -> Result<Body> {
     let pts = edges.iter().map(|p| point(*p, "an edge point")).collect::<Result<Vec<_>>>()?;
     let distance = finite(distance, "the distance")?;
-    if pts.is_empty() || !(distance > 1e-9) {
+    if pts.is_empty() || !positive(distance) {
         return Err(err("select edges and give a positive distance"));
     }
     guarded("chamfer", || Ok(Body(k::chamfer(&body.0, &pts, distance)?)))
@@ -351,7 +356,7 @@ pub fn chamfer(body: &Body, edges: &[Vec3], distance: f64) -> Result<Body> {
 pub fn shell(body: &Body, open: &[Vec3], thickness: f64) -> Result<Body> {
     let pts = open.iter().map(|p| point(*p, "a face point")).collect::<Result<Vec<_>>>()?;
     let thickness = finite(thickness, "the thickness")?;
-    if !(thickness > 1e-9) {
+    if !positive(thickness) {
         return Err(err("the shell thickness must be positive"));
     }
     guarded("shell", || Ok(Body(k::shell(&body.0, &pts, thickness)?)))

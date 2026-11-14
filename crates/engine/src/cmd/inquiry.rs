@@ -76,6 +76,10 @@ pub fn specs() -> Vec<CommandSpec> {
 
 /// Format a distance with the drawing's `LUNITS` and `LUPREC` (decimal units, four places by
 /// default).
+pub(crate) fn fmt_distance(s: &Session, v: f64) -> String {
+    fmt_d(s, v)
+}
+
 fn fmt_d(s: &Session, v: f64) -> String {
     let h = s.doc().map(|d| (d.header.i64("LUNITS", 2), d.header.i64("LUPREC", 4))).unwrap_or((2, 4));
     format_distance(v, h.0, h.1)

@@ -151,6 +151,10 @@ fn apply(s: &mut Session, keep: Handle, r: Region, erase: &[Handle]) -> Result<(
 }
 
 fn fold(s: &mut Session, hs: &[Handle], op: Op) -> Result<Value> {
+    #[cfg(feature = "solids")]
+    if let Some(v) = super::super::solids::try_boolean(s, hs, matches!(op, Op::Union))? {
+        return Ok(v);
+    }
     let rs = regions(s, hs)?;
     let Some(((h0, first), rest)) = rs.split_first() else { return Err(other("Select at least one region.")) };
     let mut acc = first.clone();
@@ -181,6 +185,10 @@ fn handles(p: &Value, key: &str) -> Result<Vec<Handle>> {
 }
 
 fn subtract(s: &mut Session, from: &[Handle], remove: &[Handle]) -> Result<Value> {
+    #[cfg(feature = "solids")]
+    if let Some(v) = super::super::solids::try_subtract(s, from, remove)? {
+        return Ok(v);
+    }
     let (a, b) = (regions(s, from)?, regions(s, remove)?);
     let Some(((h0, first), rest)) = a.split_first() else { return Err(other("Select regions to subtract from.")) };
     let mut acc = first.clone();
@@ -256,6 +264,10 @@ impl Interactive for SubtractM {
 /// implausible.
 fn run_massprop(s: &mut Session, p: &Value) -> Result<Value> {
     let hs = targets(s, p)?;
+    #[cfg(feature = "solids")]
+    if let Some(v) = super::super::solids::try_massprop(s, &hs)? {
+        return Ok(v);
+    }
     let rs = regions(s, &hs)?;
     if rs.is_empty() {
         return Err(other("Select one or more regions."));
