@@ -24,6 +24,12 @@ draftcraft-io = { path = "crates/io" }
 draftcraft-engine = { path = "crates/engine" }
 draftcraft-ui-egui = { path = "crates/ui-egui" }
 draftcraft-mcp = { path = "crates/mcp" }
+draftcraft-solid = { path = "crates/solid" }
+# 3D solids (cargo feature `solids`, docs/solids.md): SolidCraft's B-rep kernel and its geometry
+# crate, nothing above them, pinned to a reviewed commit of withshalom/solidcraft (v0.27.0, the commit
+# docs/solids.md was checked against; built on truck). Only `draftcraft-solid` names them.
+solidcraft-kernel = { git = "https://github.com/withshalom/solidcraft", rev = "d11d268597637029055060a8a6555005faaa1f93" }
+solidcraft-geom = { git = "https://github.com/withshalom/solidcraft", rev = "d11d268597637029055060a8a6555005faaa1f93" }
 # Which paths stored in a drawing (xrefs, data links) may be opened.
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
 # PDF writing (krilla) for plots, and reading them back in tests. The root patches below pin
@@ -110,6 +116,14 @@ hayro = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132ea
 hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
 hayro-cmap = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
 hayro-postscript = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
+
+# truck with SolidCraft's fixes (its vendor/README.md), for the solids kernel: the same pinned
+# commit as solidcraft-kernel (Cargo ignores dependency-local patches).
+truck-geometry = { git = "https://github.com/withshalom/solidcraft", rev = "d11d268597637029055060a8a6555005faaa1f93" }
+truck-shapeops = { git = "https://github.com/withshalom/solidcraft", rev = "d11d268597637029055060a8a6555005faaa1f93" }
+truck-stepio = { git = "https://github.com/withshalom/solidcraft", rev = "d11d268597637029055060a8a6555005faaa1f93" }
+truck-meshalgo = { git = "https://github.com/withshalom/solidcraft", rev = "d11d268597637029055060a8a6555005faaa1f93" }
+matext4cgmath = { git = "https://github.com/withshalom/solidcraft", rev = "d11d268597637029055060a8a6555005faaa1f93" }
 
 # Keep the complete egui family and native event bridge on reviewed fork commits.
 ecolor = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }

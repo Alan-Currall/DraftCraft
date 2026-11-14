@@ -1,0 +1,21 @@
+[package]
+name = "draftcraft-solid"
+description = "DraftCraft 3D solids: the one crate that names SolidCraft's B-rep kernel (bodies, operations, display edges and meshes, hidden lines and sections)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# The kernel itself. Off, this crate is empty and costs nothing: the workspace builds, tests and
+# wasm check exactly as without solids. `draftcraft-engine/solids` turns it on (docs/solids.md).
+kernel = ["dep:solidcraft-kernel", "dep:solidcraft-geom", "dep:serde_json", "dep:thiserror"]
+
+[dependencies]
+draftcraft-geom = { workspace = true }
+solidcraft-kernel = { workspace = true, optional = true }
+solidcraft-geom = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
