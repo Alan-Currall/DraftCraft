@@ -1633,3 +1633,16 @@ menu	CAD Standards	CAD 标准
 	Text, tab-delimited (TXT)	制表符分隔的文本 (TXT)
 	Enter output file name	输入要写入的文件名
 	Enter input file name	输入要读取的文件名
+# 3D solids (docs/solids.md).
+	3D Modeling	三维建模
+	3D Solid	三维实体
+	Section	截面
+	Wedge	楔体
+	Interference Checking	干涉检查
+	Slice	剖切
+	Shell	抽壳
+	Fillet Edge	圆角边
+	Fillet Edges	圆角边
+	Chamfer Edge	倒角边
+	Chamfer Edges	倒角边
+	Flatshot	平面摄影

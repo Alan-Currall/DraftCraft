@@ -29,12 +29,8 @@ pub(crate) fn meshes(so: &Solid3d) -> Vec<PolyfaceMesh> {
     // Edges inside a face: shared by two triangles of that face.
     let key = |p: Vec3| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
     let mut shared: HashMap<((u64, u64, u64), (u64, u64, u64), u32), u32> = HashMap::new();
-    let tris: Vec<([Vec3; 3], u32)> = look
-        .triangles
-        .iter()
-        .enumerate()
-        .filter_map(|(i, t)| Some((look.triangle(t)?, look.tri_face.get(i).copied().unwrap_or(u32::MAX))))
-        .collect();
+    let tris: Vec<([Vec3; 3], u32)> =
+        look.triangles.iter().enumerate().filter_map(|(i, t)| Some((look.triangle(t)?, look.tri_face.get(i).copied().unwrap_or(u32::MAX)))).collect();
     let edge = |a: Vec3, b: Vec3, f: u32| {
         let (ka, kb) = (key(a), key(b));
         if ka <= kb { (ka, kb, f) } else { (kb, ka, f) }
@@ -206,7 +202,8 @@ mod recover {
             l.positions.extend(m.vertices.iter().map(|p| inv.apply(*p)));
             let n = m.vertices.len();
             for (fi, f) in m.faces.iter().enumerate() {
-                let ix: Vec<usize> = f.iter().filter(|i| **i != 0).filter_map(|i| usize::try_from(i.unsigned_abs()).ok()).filter(|i| (1..=n).contains(i)).collect();
+                let ix: Vec<usize> =
+                    f.iter().filter(|i| **i != 0).filter_map(|i| usize::try_from(i.unsigned_abs()).ok()).filter(|i| (1..=n).contains(i)).collect();
                 if ix.len() < 3 {
                     continue;
                 }
@@ -258,7 +255,14 @@ mod recover {
                 }
             }
             let look = look(&meshes, &inv);
-            let so = Solid3d { body: Arc::new(rec.body), placement: rec.placement, look: Arc::new(look), faces: rec.faces, edges: rec.edges, volume: rec.volume };
+            let so = Solid3d {
+                body: Arc::new(rec.body),
+                placement: rec.placement,
+                look: Arc::new(look),
+                faces: rec.faces,
+                edges: rec.edges,
+                volume: rec.volume,
+            };
             if !so.placement_ok() {
                 continue;
             }

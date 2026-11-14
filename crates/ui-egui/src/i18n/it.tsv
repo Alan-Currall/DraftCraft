@@ -1657,3 +1657,16 @@ menu	Workspaces	Aree di lavoro
 	Export Attributes	Esporta attributi
 	Import Attributes	Importa attributi
 	Text, tab-delimited (TXT)	Testo delimitato da tabulazioni (TXT)
+# 3D solids (docs/solids.md).
+	3D Modeling	Modellazione 3D
+	3D Solid	Solido 3D
+	Section	Sezione
+	Wedge	Cuneo
+	Interference Checking	Controllo interferenze
+	Slice	Taglia
+	Shell	Guscio
+	Fillet Edge	Raccorda spigolo
+	Fillet Edges	Raccorda spigoli
+	Chamfer Edge	Cima spigolo
+	Chamfer Edges	Cima spigoli
+	Flatshot	Vista piatta
