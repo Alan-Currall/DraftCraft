@@ -23,7 +23,12 @@ Written 2026-11-15. Branch `feat/solids-3d`, PR https://github.com/SkryxDev/Draf
 **AutoCAD check of the files DraftCraft writes** (full notes in `side-session-notes/…/dc-acis/autocad-check.md`). AutoCAD 2027 showed three problems; the fixes are in commit `c3629868`:
 1. **Fixed:** the 3DSOLID in DXF was missing the `100 AcDbEntity` group, so AutoCAD discarded the whole DXF. A test copy with the group added opens with 0 AUDIT errors.
 2. **Fixed:** the cone's face was missing the apex loop (one point edge with no curve), so AutoCAD called it an invalid solid with volume 0. The fix is not yet re-checked in AutoCAD.
-3. **Still open:** AutoCAD rejects the SAT text in DWG 2000/2010 (`Error Code Number is 75003`, `eCannotRestoreFromAcisFile`, solids discarded). Lines now end with LF alone, as in AutoCAD's files, but that didn't fix it. Next suspect: the SAT version. AutoCAD writes 400 (2000) and 21500 (2010) in DWG, and we write 700. Try writing 400/21500 for DWG ≤ 2010, then compare the object bits after the SAT with an AutoCAD file.
+3. **Fixed, not yet checked in AutoCAD:** AutoCAD rejected the SAT text in DWG 2000/2010 (`Error Code Number is 75003`, `eCannotRestoreFromAcisFile`, solids discarded), though the same text opens from DXF. Ending lines with LF alone didn't fix it. Comparing with AutoCAD's own DWG 2000, the only real difference is the SAT version: AutoCAD writes 400, we wrote 700. The container is the same, apart from AutoCAD writing a reference point and isolines in the wireframe block. SAT is now written as save format 400, in DXF too. The changes are no history fields after an entity's attribute, no parameters or convexity on an edge, and a header that counts the records. Test: `sat_text_looks_like_acis_400`, and a check in `solids_save_as_autocad_3dsolids_in_every_version`.
+   - **Check files** in `side-session-notes/…/dc-acis/round3/`:
+     - `x-acad400-*.dwg` and `x-acad21500-2010.dwg`: AutoCAD's own SAT through our DWG writer. They tell whether the container is right.
+     - `x-dc700-2004/2007.dwg`: the old 700 SAT.
+     - `sat400-*`: the new output.
+   - **If the 400 files are still refused:** the container is the suspect. Write the reference point (the body's translation), isolines 4 and the wires flag as AutoCAD does.
 
 DWG 2013 and 2018 open cleanly with 0 AUDIT errors, and 7 of the 8 solids match MASSPROP exactly (the 8th is the cone, fixed in 2).
 
@@ -143,7 +148,7 @@ Each one is a `CommandSpec` in `crates/engine/src/cmd/solids/*`, with tests, a r
 
 ## Recommended order
 
-1. Fix the SAT in DWG 2000/2010 (error 75003), then re-check every version in AutoCAD, the cone included.
+1. Check in AutoCAD the `round3` files: SAT 400 in DWG 2000/2010 and the cone. Then re-check every version.
 2. NURBS solids, reading (1.1), then writing (1.2).
 3. REGION and BODY (1.3), DWG 2004–2010 with SAB (1.4).
 4. 3D UCS, 3D snaps, selecting parts of a solid, grips (3).

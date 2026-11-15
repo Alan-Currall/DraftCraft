@@ -1,4 +1,4 @@
-//! A body as ACIS records (save format 700).
+//! A body as ACIS records (written as SAT 400 or SAB 700 by `model`).
 //!
 //! The body goes through STEP first: solidcore writes its record as ISO 10303-42 topology on
 //! exact surfaces and curves (`solidcore_step::write`), every face's side and loops already
@@ -631,13 +631,13 @@ fn layout(m: &Model) -> Result<Vec<Record>> {
             name: "edge",
             fields: vec![
                 Field::Ref(v(edge.start)),
-                Field::Real(t0),
+                Field::Param(t0),
                 Field::Ref(v(edge.end)),
-                Field::Real(t1),
+                Field::Param(t1),
                 Field::Ref(first_use),
                 Field::Ref(curve_index.get(k).copied().flatten()),
                 Field::Sense(false),
-                Field::Str("unknown"),
+                Field::Convexity,
             ],
         });
     }

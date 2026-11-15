@@ -41,12 +41,21 @@ fn a_box_with_a_hole_round_trips_through_acis() {
 }
 
 #[test]
-fn sat_text_looks_like_acis_700() {
+/// SAT is save format 400, as AutoCAD writes it in DWG 2000: AutoCAD 2027 discards a 700 solid
+/// from a DWG 2000 to 2010 file (error 75003). Format 400 has no history fields after an entity's
+/// attribute, and no parameters or convexity on an edge; the header counts the records.
+fn sat_text_looks_like_acis_400() {
     let b = box_solid(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 2.0, 3.0)).expect("box");
     let sat = write_sat(&b).expect("sat");
     let lines: Vec<&str> = sat.lines().collect();
-    assert_eq!(lines.first().copied(), Some("700 0 1 0 "));
-    assert!(lines.iter().any(|l| l.starts_with("body $-1 -1 $-1 $1 $-1 $-1 #")), "{sat}");
+    let records = lines.len() - 4;
+    assert_eq!(lines.first().copied(), Some(format!("400 {records} 1 0 ").as_str()));
+    assert!(lines.iter().any(|l| l.starts_with("body $-1 $1 $-1 $-1 #")), "{sat}");
+    for edge in lines.iter().filter(|l| l.starts_with("edge ")) {
+        let words: Vec<&str> = edge.split(' ').collect();
+        assert_eq!(words.len(), 8, "edge $attrib $start $end $coedge $curve sense #: {edge}");
+        assert!(!edge.contains("unknown"), "{edge}");
+    }
     assert_eq!(lines.iter().filter(|l| l.starts_with("face ")).count(), 6);
     assert_eq!(lines.iter().filter(|l| l.starts_with("plane-surface ")).count(), 6);
     assert_eq!(lines.iter().filter(|l| l.starts_with("edge ")).count(), 12);
@@ -82,17 +91,20 @@ fn a_cone_apex_is_a_point_edge_loop() {
     let sat = write_sat(&cone(Vec3::new(300.0, 0.0, 0.0), z, 30.0, 0.0, 60.0).expect("cone")).expect("sat");
     let lines: Vec<&str> = sat.lines().collect();
     assert_eq!(lines.iter().filter(|l| l.starts_with("loop ")).count(), 3, "base face, cone side and apex\n{sat}");
-    let point_edges: Vec<&&str> = lines.iter().filter(|l| l.starts_with("edge ") && l.contains(" 1 $") && l.contains(" 0 $")).collect();
-    assert_eq!(point_edges.len(), 1, "{sat}");
-    let f: Vec<&str> = point_edges[0].split_whitespace().collect();
-    // edge attrib -1 attrib start 1 end 0 coedge curve sense @7 unknown #
-    assert_eq!(f.get(4), f.get(6), "starts and ends at the apex\n{sat}");
-    assert_eq!(f.get(9).copied(), Some("$-1"), "no curve\n{sat}");
+    // edge $attrib $start $end $coedge $curve sense #
+    let point_edges: Vec<Vec<&str>> = lines
+        .iter()
+        .filter(|l| l.starts_with("edge "))
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .filter(|f| f.get(5) == Some(&"$-1"))
+        .collect();
+    assert_eq!(point_edges.len(), 1, "one edge with no curve\n{sat}");
+    assert_eq!(point_edges[0].get(2), point_edges[0].get(3), "starts and ends at the apex\n{sat}");
     assert_eq!(lines.iter().filter(|l| l.starts_with("ellipse-curve ")).count(), 1, "{sat}");
     assert_eq!(lines.iter().filter(|l| l.starts_with("vertex ")).count(), 2, "{sat}");
     // The frustum and the sphere gain no point edge.
     for body in [cone(Vec3::new(0.0, 0.0, 0.0), z, 30.0, 10.0, 60.0).expect("frustum"), sphere(Vec3::new(0.0, 0.0, 0.0), 30.0).expect("sphere")] {
         let sat = write_sat(&body).expect("sat");
-        assert!(sat.lines().filter(|l| l.starts_with("edge ")).all(|l| !l.contains("$-1 forward @7")), "{sat}");
+        assert!(sat.lines().filter(|l| l.starts_with("edge ")).all(|l| l.split_whitespace().nth(5) != Some("$-1")), "{sat}");
     }
 }

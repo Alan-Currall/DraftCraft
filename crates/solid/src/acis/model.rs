@@ -1,10 +1,16 @@
-//! ACIS records as DraftCraft writes them, and their two encodings: SAT text and SAB binary, save
-//! format 700 (Spatial's published 7.0 save format, the level DWG and DXF readers take; docs/solids.md,
-//! "The ACIS translator").
+//! ACIS records as DraftCraft writes them, and their two encodings (docs/solids.md, "The ACIS
+//! translator"):
 //!
-//! A record is its name and its fields after the three every entity starts with (its attribute,
-//! its history index and one more reference, all null here). SAT writes each field as a word;
-//! SAB writes the same fields as tagged binary tokens, one tag byte and its little-endian value.
+//! - SAT text in save format 400, the ACIS 4.0 format AutoCAD writes in DWG and DXF 2000 files and
+//!   every AutoCAD reads: AutoCAD 2027 discards a 700 solid from a DWG 2000 to 2010 file
+//!   (error 75003), though it takes the same text from DXF.
+//! - SAB binary in save format 700 (Spatial's published 7.0 format), what an AutoCAD 2013 and
+//!   later data store record holds.
+//!
+//! A record is its name and its fields after the ones every entity starts with: its attribute
+//! (null here) and, from format 700, its history index and one more reference (null). SAT writes
+//! each field as a word; SAB writes the same fields as tagged binary tokens, one tag byte and its
+//! little-endian value.
 
 /// One field of a record.
 #[derive(Clone, Debug, PartialEq)]
@@ -13,6 +19,10 @@ pub(crate) enum Field {
     Ref(Option<usize>),
     /// A real number.
     Real(f64),
+    /// An edge's parameter at one of its vertices: format 700 on (format 400 works it out).
+    Param(f64),
+    /// An edge's convexity, `unknown`: format 700 on.
+    Convexity,
     /// A position (lengths).
     Pos([f64; 3]),
     /// A vector (a direction, or an axis whose length counts).
@@ -25,8 +35,6 @@ pub(crate) enum Field {
     ForwardV,
     /// An unbounded parameter range end (SAT `I`).
     Infinite,
-    /// A short string.
-    Str(&'static str),
 }
 
 /// One record: its name (`plane-surface`, `coedge`…) and its fields.
@@ -36,10 +44,13 @@ pub(crate) struct Record {
     pub fields: Vec<Field>,
 }
 
-/// The save format written.
+/// The save format of SAT text.
+pub(crate) const SAT_VERSION: u32 = 400;
+/// The save format of SAB.
 pub(crate) const VERSION: u32 = 700;
 /// What the header says wrote the data.
 const PRODUCT: &str = "DraftCraft";
+const SAT_ACIS_VERSION: &str = "ACIS 4.0";
 const ACIS_VERSION: &str = "ACIS 7.0";
 /// The save date: fixed, so a solid saved twice keeps its bytes.
 const DATE: &str = "Mon Jan 01 00:00:00 2001";
@@ -64,26 +75,27 @@ fn triple(v: &[f64; 3]) -> String {
     format!("{} {} {}", real(v[0]), real(v[1]), real(v[2]))
 }
 
-/// The records as SAT text, header and end line included, one record a line.
+/// The records as SAT text in save format 400, header and end line included, one record a line.
+/// The header counts the records, as AutoCAD's does.
 pub(crate) fn sat(records: &[Record], bodies: usize) -> String {
-    let mut o = format!("{VERSION} 0 {bodies} 0 \n");
-    o.push_str(&format!("{} {} {} {} {} {} \n", PRODUCT.len(), PRODUCT, ACIS_VERSION.len(), ACIS_VERSION, DATE.len(), DATE));
+    let mut o = format!("{SAT_VERSION} {} {bodies} 0 \n", records.len());
+    o.push_str(&format!("{} {} {} {} {} {} \n", PRODUCT.len(), PRODUCT, SAT_ACIS_VERSION.len(), SAT_ACIS_VERSION, DATE.len(), DATE));
     o.push_str(&format!("{} {} {} \n", real(SCALE), real(RESABS), real(RESNOR)));
     for r in records {
         o.push_str(r.name);
-        o.push_str(" $-1 -1 $-1");
-        for f in &r.fields {
+        o.push_str(" $-1");
+        for f in r.fields.iter().filter(|f| !matches!(f, Field::Param(_) | Field::Convexity)) {
             o.push(' ');
             match f {
                 Field::Ref(Some(i)) => o.push_str(&format!("${i}")),
                 Field::Ref(None) => o.push_str("$-1"),
-                Field::Real(v) => o.push_str(&real(*v)),
+                Field::Real(v) | Field::Param(v) => o.push_str(&real(*v)),
+                Field::Convexity => o.push_str("@7 unknown"),
                 Field::Pos(p) | Field::Vector(p) => o.push_str(&triple(p)),
                 Field::Sense(reversed) => o.push_str(if *reversed { "reversed" } else { "forward" }),
                 Field::Single => o.push_str("single"),
                 Field::ForwardV => o.push_str("forward_v"),
                 Field::Infinite => o.push('I'),
-                Field::Str(s) => o.push_str(&format!("@{} {s}", s.len())),
             }
         }
         o.push_str(" #\n");
@@ -165,12 +177,12 @@ pub(crate) fn sab(records: &[Record], bodies: usize) -> Vec<u8> {
         for f in &r.fields {
             match f {
                 Field::Ref(i) => push_i32(&mut o, tag::REF, reference(*i)),
-                Field::Real(v) => push_real(&mut o, *v),
+                Field::Real(v) | Field::Param(v) => push_real(&mut o, *v),
+                Field::Convexity => push_name(&mut o, tag::STR, "unknown"),
                 Field::Pos(p) => push_triple(&mut o, tag::POS, p),
                 Field::Vector(p) => push_triple(&mut o, tag::VECTOR, p),
                 Field::Sense(reversed) => o.push(if *reversed { tag::TRUE } else { tag::FALSE }),
                 Field::Single | Field::ForwardV | Field::Infinite => o.push(tag::FALSE),
-                Field::Str(s) => push_name(&mut o, tag::STR, s),
             }
         }
         o.push(tag::END);

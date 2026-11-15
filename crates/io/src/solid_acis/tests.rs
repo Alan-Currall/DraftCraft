@@ -148,6 +148,13 @@ fn solids_save_as_autocad_3dsolids_in_every_version() {
             let at = |g: (&str, &str)| groups.iter().position(|(c, x)| c == g.0 && (g.1.is_empty() || x == g.1));
             let (marker, layer, modeler) = (at(("100", "AcDbEntity")), at(("8", "")), at(("100", "AcDbModelerGeometry")));
             assert!(marker.is_some() && marker < layer && layer < modeler, "{v:?}: {groups:?}");
+            // SAT is ACIS 400, as AutoCAD writes it in a 2000 file: AutoCAD 2027 discards a 700
+            // solid from a DWG 2000 to 2010 file (error 75003). The DWG writer takes these groups.
+            if v < Version::R2013 {
+                let first = groups.iter().skip_while(|(c, _)| c != "70").find(|(c, _)| c == "1");
+                let first = first.map(|(_, x)| draftcraft_solid::acis::scramble(&x.replace("^ ", "^")));
+                assert!(first.as_deref().is_some_and(|l| l.starts_with("400 ")), "{v:?}: {first:?}");
+            }
         }
         check(&format!("DXF {v:?}"), &solids(&crate::read(&dxf, "s.dxf").expect("read dxf")), &want);
         let (dwg, unwritten) = crate::write_dwg_own(&d, v).expect("dwg");

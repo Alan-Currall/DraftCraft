@@ -4,8 +4,8 @@
 //!
 //! - [`read`] turns ACIS data, in any dialect AutoCAD writes (Spatial's ACIS save formats and
 //!   Autodesk's ShapeManager ones, text or binary, scrambled or plain), into kernel bodies.
-//! - [`write_sat`] and [`write_sab`] write a body as ACIS save format 700, which every DWG and
-//!   DXF reader takes.
+//! - [`write_sat`] writes a body as SAT save format 400, which every AutoCAD reads from DWG and
+//!   DXF 2000 to 2010; [`write_sab`] as SAB save format 700, for the data store of 2013 and later.
 //!
 //! Both go through STEP, which solidcore reads and writes and which describes a B-rep the same
 //! way ACIS does: reading, `cadmpeg-asm` (Apache-2.0) decodes the ACIS records into a neutral
@@ -20,7 +20,7 @@ pub use read::{MAX_DATA, read};
 
 use crate::body::{Body, Result};
 
-/// The body as SAT text (save format 700), header and end line included, one record a line.
+/// The body as SAT text (save format 400), header and end line included, one record a line.
 pub fn write_sat(body: &Body) -> Result<String> {
     Ok(model::sat(&write::body_records(body)?, 1))
 }
