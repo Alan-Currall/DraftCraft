@@ -379,6 +379,7 @@ mod recover {
                 faces: rec.faces,
                 edges: rec.edges,
                 volume: rec.volume,
+                body_entity: false,
             };
             if !so.placement_ok() {
                 continue;
@@ -455,7 +456,7 @@ mod tests {
         placement.m[1][3] = -2.5;
         placement.m[2][3] = 7.0;
         let body: Vec<u8> = (0..body_len).map(|i| (i * 31 % 256) as u8).collect();
-        Solid3d { body: Arc::new(body), placement, look: Arc::new(look), faces: 4, edges: 6, volume: 1.0 / 6.0 }
+        Solid3d { body: Arc::new(body), placement, look: Arc::new(look), faces: 4, edges: 6, volume: 1.0 / 6.0, body_entity: false }
     }
 
     fn drawing_with(so: Solid3d) -> Drawing {

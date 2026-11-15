@@ -51,6 +51,10 @@ pub struct Solid3d {
     pub edges: u32,
     #[serde(default)]
     pub volume: f64,
+    /// Read from an AutoCAD BODY entity (ACIS data from another modeller) and saved back as one;
+    /// a solid DraftCraft makes is a 3DSOLID.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub body_entity: bool,
 }
 
 impl Solid3d {

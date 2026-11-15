@@ -39,6 +39,8 @@ pub(crate) enum Field {
     Sense(bool),
     /// A face's sides: single.
     Single,
+    /// A face's sides: double, its containment out (a region's face).
+    Double,
     /// A surface's v sense: forward.
     ForwardV,
     /// An unbounded parameter range end (SAT `I`).
@@ -162,6 +164,7 @@ pub(crate) fn sat(records: &[Record], bodies: usize) -> String {
                 Field::Pos(p) | Field::Vector(p) => o.push_str(&triple(p)),
                 Field::Sense(reversed) => o.push_str(if *reversed { "reversed" } else { "forward" }),
                 Field::Single => o.push_str("single"),
+                Field::Double => o.push_str("double out"),
                 Field::ForwardV => o.push_str("forward_v"),
                 Field::Infinite => o.push('I'),
                 Field::Int(i) => o.push_str(&i.to_string()),
@@ -288,6 +291,7 @@ pub(crate) fn sab(records: &[Record], bodies: usize) -> Vec<u8> {
                 Field::Vector(p) => push_triple(&mut o, tag::VECTOR, p),
                 Field::Sense(reversed) => o.push(if *reversed { tag::TRUE } else { tag::FALSE }),
                 Field::Single | Field::ForwardV | Field::Infinite => o.push(tag::FALSE),
+                Field::Double => o.extend([tag::TRUE, tag::FALSE]),
                 Field::Int(i) => push_i32(&mut o, tag::INT, int32(*i)),
                 Field::Sub(toks) => sab_tokens(&mut o, toks),
             }

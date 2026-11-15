@@ -186,6 +186,7 @@ impl EntityKind {
             EntityKind::Face3d(_) => "3DFACE",
             EntityKind::PolyfaceMesh(_) => "POLYLINE",
             EntityKind::Region(_) => "REGION",
+            EntityKind::Solid3d(s) if s.body_entity => "BODY",
             EntityKind::Solid3d(_) => "3DSOLID",
             EntityKind::Viewport(_) => "VIEWPORT",
             EntityKind::Image(i) if i.underlay.is_some() => "PDFUNDERLAY",

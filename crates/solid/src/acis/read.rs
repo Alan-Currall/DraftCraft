@@ -42,9 +42,16 @@ pub fn read(data: &[u8]) -> Result<Vec<Body>> {
     if data.is_empty() || data.len() > MAX_DATA {
         return Err(err("the solid's ACIS data is empty or too large"));
     }
-    let brep = if data.starts_with(SAB_MAGIC) || data.starts_with(b"ASM BinaryFile") { decode_binary(data)? } else { decode_text(data)? };
-    let (value, scale) = brep;
+    let (value, scale) = decode(data)?;
     to_bodies(&value, scale)
+}
+
+/// The data decoded into the neutral B-rep (as JSON), and its millimetres per unit.
+pub(super) fn decode(data: &[u8]) -> Result<(Value, f64)> {
+    if data.is_empty() || data.len() > MAX_DATA {
+        return Err(err("the ACIS data is empty or too large"));
+    }
+    if data.starts_with(SAB_MAGIC) || data.starts_with(b"ASM BinaryFile") { decode_binary(data) } else { decode_text(data) }
 }
 
 /// The text as SAT: unscrambled when it doesn't start with the save format's number.
@@ -166,11 +173,11 @@ fn long_names(records: Vec<cadmpeg_asm::sab::Record>) -> Vec<cadmpeg_asm::sab::R
 }
 
 /// The items of one list of the decoded B-rep, by id.
-fn by_id<'a>(v: &'a Value, list: &str) -> HashMap<&'a str, &'a Value> {
+pub(super) fn by_id<'a>(v: &'a Value, list: &str) -> HashMap<&'a str, &'a Value> {
     v.get(list).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| Some((x.get("id")?.as_str()?, x))).collect()).unwrap_or_default()
 }
 
-fn ids(v: Option<&Value>) -> Vec<&str> {
+pub(super) fn ids(v: Option<&Value>) -> Vec<&str> {
     v.and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default()
 }
 
@@ -184,7 +191,7 @@ fn xyz(v: &Value, key: &str) -> Option<P3> {
 }
 
 /// The decoded B-rep as STEP geometry, lengths in the data's own units.
-struct Geometry {
+pub(super) struct Geometry {
     /// Millimetres per unit.
     mm: f64,
     /// The body's transform (ACIS's `transform` record): its linear part, its shift (in units)
@@ -195,14 +202,14 @@ struct Geometry {
 }
 
 impl Geometry {
-    fn new(mm: f64) -> Geometry {
+    pub(super) fn new(mm: f64) -> Geometry {
         Geometry { mm, linear: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], shift: [0.0; 3], scale: 1.0 }
     }
 
     /// The body's transform, from the decoded body's rows (row-major, applied to column points;
     /// the shift in the decoder's millimetres of the binary centimetre convention). A mirroring
     /// or flattening transform is refused.
-    fn transformed(&self, rows: Option<&Value>) -> Result<Geometry> {
+    pub(super) fn transformed(&self, rows: Option<&Value>) -> Result<Geometry> {
         let Some(rows) = rows.and_then(Value::as_array) else { return Ok(Geometry::new(self.mm)) };
         let mut m = [[0.0; 4]; 3];
         for (i, row) in rows.iter().take(3).enumerate() {
@@ -235,7 +242,7 @@ impl Geometry {
             l[2][0] * p[0] + l[2][1] * p[1] + l[2][2] * p[2],
         ]
     }
-    fn point(&self, v: &Value, key: &str) -> Option<P3> {
+    pub(super) fn point(&self, v: &Value, key: &str) -> Option<P3> {
         let p = xyz(v, key)?;
         let q = self.apply([p[0] / self.mm, p[1] / self.mm, p[2] / self.mm]);
         Some(add(q, self.shift, 1.0))
@@ -247,7 +254,7 @@ impl Geometry {
         Some(Placement { origin: self.point(g, origin)?, axis: self.direction(g, axis)?, ref_direction: self.direction(g, reference)? })
     }
 
-    fn surface(&self, s: &Value) -> Result<Surface> {
+    pub(super) fn surface(&self, s: &Value) -> Result<Surface> {
         let g = solved(s.get("geometry"));
         let g = g.ok_or_else(|| err("a face without a surface"))?;
         let kind = g.get("kind").and_then(Value::as_str).unwrap_or("");
@@ -282,7 +289,7 @@ impl Geometry {
         }
     }
 
-    fn curve(&self, c: &Value, procedural: &HashMap<&str, &Value>) -> Result<Option<Curve>> {
+    pub(super) fn curve(&self, c: &Value, procedural: &HashMap<&str, &Value>) -> Result<Option<Curve>> {
         let geometry = c.get("geometry");
         if let Some(def) = geometry.filter(|g| g.get("cache").is_none()).and_then(|g| g.get("construction")).and_then(Value::as_str)
             && let Some(def) = procedural.get(def).and_then(|p| p.get("definition"))

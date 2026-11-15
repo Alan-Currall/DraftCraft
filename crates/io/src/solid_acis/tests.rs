@@ -276,6 +276,16 @@ fn write_files_for_autocad() {
     for (i, (v, c)) in solids(&d).iter().enumerate() {
         println!("#{} volume {v:.4} centroid {:.4}, {:.4}, {:.4}", i + 1, c.x, c.y, c.z);
     }
+    // Regions: the plate with its hole and round end, and the disc.
+    let (r, areas) = regions_drawing();
+    for (v, y) in [(Version::R2000, "2000"), (Version::R2010, "2010"), (Version::R2013, "2013"), (Version::R2018, "2018")] {
+        let dxf = crate::write_with(&r, "r.dxf", &crate::SaveOptions { version: Some(v), binary: false }).expect("dxf");
+        std::fs::write(format!("{dir}/dc-regions-{y}.dxf"), dxf).expect("write");
+        std::fs::write(format!("{dir}/dc-regions-{y}.dwg"), crate::write_dwg_own(&r, v).expect("dwg").0).expect("write");
+    }
+    for (i, a) in areas.iter().enumerate() {
+        println!("region #{} area {a:.4}", i + 1);
+    }
 }
 
 #[test]
@@ -306,4 +316,149 @@ fn autocad_free_form_solids_write_back() {
         n += 1;
     }
     assert_eq!(n, 2);
+}
+
+/// A 100 × 60 plate with a hole of radius 15 and a round end, and a disc of radius 5 apart.
+fn regions_drawing() -> (Drawing, Vec<f64>) {
+    use draftcraft_doc::{HatchLoop, Region};
+    use draftcraft_geom::{PolyVertex, Vec2};
+    let p = |x: f64, y: f64, b: f64| PolyVertex::with_bulge(Vec2::new(x, y), b);
+    let lp = |v: Vec<PolyVertex>, outer: bool| HatchLoop { vertices: v, outer, sources: Vec::new() };
+    let mut d = Drawing::new_metric();
+    let plate = Region {
+        loops: vec![
+            lp(vec![p(0.0, 0.0, 0.0), p(100.0, 0.0, 1.0), p(100.0, 60.0, 0.0), p(0.0, 60.0, 0.0)], true),
+            lp(vec![p(35.0, 30.0, 1.0), p(65.0, 30.0, 1.0)], false),
+        ],
+    };
+    let disc = Region { loops: vec![lp(vec![p(200.0, 0.0, 1.0), p(210.0, 0.0, 1.0)], true)] };
+    let mut want = Vec::new();
+    for r in [plate, disc] {
+        want.push(r.area());
+        d.add(&Space::Model, Common::default(), EntityKind::Region(r)).expect("add");
+    }
+    (d, want)
+}
+
+fn region_areas(d: &Drawing) -> Vec<f64> {
+    d.model.iter().filter_map(|e| if let EntityKind::Region(r) = &e.kind { Some(r.area()) } else { None }).collect()
+}
+
+#[test]
+fn regions_save_as_autocad_regions_in_every_version() {
+    let (d, want) = regions_drawing();
+    for v in Version::ALL {
+        let dxf = crate::write_with(&d, "r.dxf", &crate::SaveOptions { version: Some(v), binary: false }).expect("dxf");
+        let text = String::from_utf8_lossy(&dxf).replace("\r\n", "\n");
+        assert_eq!(text.matches("\nREGION\n").count(), 2, "{v:?}");
+        // AutoCAD's own entity, not the polylines DraftCraft writes without the ACIS writer.
+        assert!(!text.contains("REGIONPART") && !text.contains("\nLWPOLYLINE\n"), "{v:?}");
+        assert_eq!(text.contains("\nACDSDATA\n"), v >= Version::R2013, "{v:?}");
+        let back = crate::read(&dxf, "r.dxf").expect("read dxf");
+        assert!(back.read_notes.iter().all(|n| !n.contains("region")), "{v:?}: {:?}", back.read_notes);
+        let got = region_areas(&back);
+        assert_eq!(got.len(), 2, "DXF {v:?}");
+        assert!(got.iter().zip(&want).all(|(a, b)| close(*a, *b)), "DXF {v:?}: {got:?} {want:?}");
+        assert_eq!(back.foreign.data_store_entities().len(), 0, "{v:?}");
+        let (dwg, unwritten) = crate::write_dwg_own(&d, v).expect("dwg");
+        assert!(unwritten.is_empty(), "{v:?}: {unwritten:?}");
+        let got = region_areas(&crate::read(&dwg, "r.dwg").expect("read dwg"));
+        assert!(got.len() == 2 && got.iter().zip(&want).all(|(a, b)| close(*a, *b)), "DWG {v:?}: {got:?} {want:?}");
+    }
+}
+
+#[test]
+fn a_body_is_saved_as_a_body_again() {
+    let mut d = Drawing::new_metric();
+    let b = box_solid(Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, 20.0, 30.0)).expect("box");
+    let so = draftcraft_doc::Solid3d { body_entity: true, ..super::solid_of(&b).expect("solid") };
+    d.add(&Space::Model, Common::default(), EntityKind::Solid3d(so)).expect("add");
+    for v in [Version::R2000, Version::R2010, Version::R2018] {
+        let dxf = crate::write_with(&d, "b.dxf", &crate::SaveOptions { version: Some(v), binary: false }).expect("dxf");
+        let text = String::from_utf8_lossy(&dxf).replace("\r\n", "\n");
+        assert!(text.contains("\nBODY\n") && !text.contains("\n3DSOLID\n") && !text.contains("AcDb3dSolid"), "{v:?}");
+        let (dwg, _) = crate::write_dwg_own(&d, v).expect("dwg");
+        for (bytes, name) in [(dxf, "b.dxf"), (dwg, "b.dwg")] {
+            let back = crate::read(&bytes, name).expect("read");
+            let bodies: Vec<&draftcraft_doc::Solid3d> =
+                back.model.iter().filter_map(|e| if let EntityKind::Solid3d(so) = &e.kind { Some(so) } else { None }).collect();
+            assert!(bodies.len() == 1 && bodies[0].body_entity, "{name} {v:?}");
+            assert!(close(bodies[0].volume, 6000.0), "{name} {v:?}: {}", bodies[0].volume);
+        }
+    }
+}
+
+#[test]
+fn hostile_region_groups_are_kept_and_never_crash() {
+    let (d, _) = regions_drawing();
+    let text = String::from_utf8(crate::write_with(&d, "r.dxf", &crate::SaveOptions { version: Some(Version::R2000), binary: false }).expect("dxf"))
+        .expect("text")
+        .replace("\r\n", "\n");
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let first = lines.iter().position(|l| l == "AcDbModelerGeometry").expect("region");
+    let sat: Vec<usize> =
+        (first + 1..lines.len() - 1).step_by(2).take_while(|i| lines[*i].trim() != "0").filter(|i| lines[*i].trim() == "1").map(|i| i + 1).collect();
+    assert!(sat.len() > 10);
+    for (k, &at) in sat.iter().enumerate().skip(3) {
+        let mut l = lines.clone();
+        match k % 3 {
+            0 => l[at] = String::new(),
+            1 => l[at] = l[at].chars().map(|c| if c.is_ascii_alphanumeric() { 'n' } else { c }).collect(),
+            _ => {
+                let half = l[at].len() / 2;
+                l[at].truncate(half);
+            }
+        }
+        let back = crate::read(l.join("\n").as_bytes(), "bad.dxf").expect("the drawing still opens");
+        let regions = back.model.iter().filter(|e| matches!(e.kind, EntityKind::Region(_))).count();
+        let kept = back.model.iter().filter(|e| matches!(&e.kind, EntityKind::Unknown(u) if u.dxf_type == "REGION")).count();
+        assert_eq!(regions + kept, 2, "line {at}");
+        if kept > 0 {
+            assert!(back.read_notes.iter().any(|n| n.contains("region")), "line {at}: {:?}", back.read_notes);
+        }
+    }
+}
+
+/// AutoCAD's MASSPROP for the five regions of `regions-*` (README-regions.md): area, perimeter,
+/// centroid.
+const REGIONS: [(f64, f64, [f64; 2]); 5] = [
+    (6000.0, 320.0, [50.0, 30.0]),
+    (2827.4334, 188.4956, [200.0, 30.0]),
+    (5293.1417, 414.2478, [350.0, 30.0]),
+    (9926.9908, 377.0796, [550.0, 50.2622]),
+    (800.0, 160.0, [730.0, 10.0]),
+];
+
+#[test]
+fn autocad_regions_open_as_regions_in_every_format() {
+    for name in ["regions-2000.dxf", "regions-2010.dxf", "regions-2018.dxf", "regions-2000.dwg", "regions-2013.dwg", "regions-2018.dwg"] {
+        let d = crate::read(&data(name), name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(d.read_notes.iter().all(|n| !n.contains("region")), "{name}: {:?}", d.read_notes);
+        let props: Vec<draftcraft_doc::RegionProps> =
+            d.model.iter().filter_map(|e| if let EntityKind::Region(r) = &e.kind { Some(r.props()) } else { None }).collect();
+        assert_eq!(props.len(), REGIONS.len(), "{name}");
+        for (i, (p, (area, perimeter, c))) in props.iter().zip(REGIONS).enumerate() {
+            // MASSPROP prints four decimals.
+            assert!((p.area - area).abs() <= 1e-4 + 1e-9 * area, "{name} #{i}: area {}, AutoCAD's {area}", p.area);
+            assert!((p.perimeter - perimeter).abs() <= 1e-4 + 1e-9 * perimeter, "{name} #{i}: perimeter {}, AutoCAD's {perimeter}", p.perimeter);
+            assert!(
+                (p.centroid.x - c[0]).abs() <= 1e-4 && (p.centroid.y - c[1]).abs() <= 1e-4,
+                "{name} #{i}: centroid {:?}, AutoCAD's {c:?}",
+                p.centroid
+            );
+        }
+        assert!(d.foreign.data_store_entities().is_empty(), "{name}");
+        // Saved again, they stay regions with the same areas.
+        for v in [Version::R2000, Version::R2018] {
+            for out in ["a.dxf", "a.dwg"] {
+                let bytes = crate::write_with(&d, out, &crate::SaveOptions { version: Some(v), binary: false }).expect("write");
+                let back = crate::read(&bytes, out).expect("read back");
+                let got = region_areas(&back);
+                assert!(
+                    got.len() == 5 && got.iter().zip(REGIONS).all(|(a, (w, ..))| (a - w).abs() <= 1e-4 + 1e-9 * w),
+                    "{name} → {out} {v:?}: {got:?}"
+                );
+            }
+        }
+    }
 }

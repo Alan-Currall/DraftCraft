@@ -29,7 +29,8 @@ image = { workspace = true }
 chrono = { workspace = true }
 
 [features]
-# 3D solids (docs/solids.md): AutoCAD's 3DSOLIDs (ACIS) opened as solids and solids saved as
+# 3D solids (docs/solids.md): AutoCAD's 3DSOLIDs and BODYs (ACIS) opened as solids, REGIONs as
+# regions, and solids and regions saved as AutoCAD's own; solids saved as
 # 3DSOLIDs, through the kernel; and the meshes DraftCraft saved for its solids reopened as solids.
 # Without it a solid is saved in the interim form (a drawing without the feature has no solids).
 solids = ["dep:draftcraft-solid", "draftcraft-solid/kernel"]

@@ -72,7 +72,7 @@ fn unit(a: P3) -> Option<P3> {
 
 /// An ACIS curve: its fields, and how a point maps to its parameter.
 #[derive(Clone, Debug)]
-enum ACurve {
+pub(super) enum ACurve {
     Straight {
         root: P3,
         dir: P3,
@@ -468,7 +468,7 @@ fn spline_surface(b: &BSplineSurface) -> Result<Record> {
 /// A pcurve as STEP gives it: a 2D B-spline on the STEP edge's parameter, `[a, b]` its knot range,
 /// running along the edge's curve.
 #[derive(Clone, Debug)]
-struct Bs2 {
+pub(super) struct Bs2 {
     degree: usize,
     /// The full knot vector.
     knots: Vec<f64>,
@@ -579,37 +579,39 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
 /// One use of an edge in a loop: the edge (into the edge table), whether the loop runs against
 /// it, and its pcurve (into the pcurve table) on a spline face.
 #[derive(Clone, Copy, Debug)]
-struct Use {
-    edge: usize,
-    reversed: bool,
-    pcurve: Option<usize>,
+pub(super) struct Use {
+    pub(super) edge: usize,
+    pub(super) reversed: bool,
+    pub(super) pcurve: Option<usize>,
 }
 
-struct AEdge {
-    start: usize,
-    end: usize,
+pub(super) struct AEdge {
+    pub(super) start: usize,
+    pub(super) end: usize,
     /// `None` for a point edge: a cone's apex.
-    curve: Option<ACurve>,
+    pub(super) curve: Option<ACurve>,
     /// The PCURVEs STEP gives the edge on spline faces: their surface and curve.
-    pcurves: Vec<(Surface, Bs2)>,
+    pub(super) pcurves: Vec<(Surface, Bs2)>,
 }
 
-struct AFace {
-    surface: Record,
-    reversed: bool,
-    loops: Vec<Vec<Use>>,
+pub(super) struct AFace {
+    pub(super) surface: Record,
+    pub(super) reversed: bool,
+    pub(super) loops: Vec<Vec<Use>>,
     /// On a spline surface: its coedges carry pcurves referring to it.
-    spline: bool,
+    pub(super) spline: bool,
+    /// Double-sided, as a region's (a sheet, no inside): `double out`.
+    pub(super) double: bool,
 }
 
 /// The body's B-rep read from the STEP entities, in ACIS terms.
 #[derive(Default)]
-struct Model {
+pub(super) struct Model {
     /// Lumps, each its shells, each its faces.
-    lumps: Vec<Vec<Vec<AFace>>>,
-    edges: Vec<AEdge>,
+    pub(super) lumps: Vec<Vec<Vec<AFace>>>,
+    pub(super) edges: Vec<AEdge>,
     edge_of: HashMap<u64, usize>,
-    points: Vec<P3>,
+    pub(super) points: Vec<P3>,
     vertex_of: HashMap<u64, usize>,
     pcurves: Vec<Bs2>,
 }
@@ -792,7 +794,7 @@ impl Model {
                 kept.push(apex);
             }
         }
-        Ok(AFace { surface: s, reversed: !(same_sense ^ flip), loops: kept, spline })
+        Ok(AFace { surface: s, reversed: !(same_sense ^ flip), loops: kept, spline, double: false })
     }
 
     /// Where a use starts and ends.
@@ -898,7 +900,7 @@ fn edge_range(m: &Model, edge: &AEdge) -> Result<[f64; 2]> {
 
 /// The model's records in file order: the body, lumps, shells, faces, loops, coedges, edges,
 /// vertices, points, surfaces, curves and pcurves.
-fn layout(m: &Model) -> Result<Vec<Record>> {
+pub(super) fn layout(m: &Model) -> Result<Vec<Record>> {
     let faces: Vec<&AFace> = m.lumps.iter().flatten().flatten().collect();
     let lumps = m.lumps.len();
     let shells: usize = m.lumps.iter().map(Vec::len).sum();
@@ -1055,7 +1057,7 @@ fn layout(m: &Model) -> Result<Vec<Record>> {
                         Field::Ref(None),
                         Field::Ref(Some(base_surface + fi)),
                         Field::Sense(f.reversed),
-                        Field::Single,
+                        if f.double { Field::Double } else { Field::Single },
                     ],
                 });
                 fi += 1;

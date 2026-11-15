@@ -13,10 +13,12 @@
 
 mod model;
 mod read;
+mod region;
 mod write;
 
 pub use model::scramble;
 pub use read::{MAX_DATA, read};
+pub use region::{MAX_REGION_LOOPS, read_region};
 
 use crate::body::{Body, Result};
 
@@ -28,6 +30,17 @@ pub fn write_sat(body: &Body) -> Result<String> {
 /// The body as SAB (save format 700): what an AutoCAD 2013 and later data store record holds.
 pub fn write_sab(body: &Body) -> Result<Vec<u8>> {
     Ok(model::sab(&write::body_records(body)?, 1))
+}
+
+/// A region (its loops, each its polyline vertices on the XY plane and whether it is an outer
+/// loop) as SAT text, save format 400: what a REGION holds in DWG and DXF 2000 to 2010.
+pub fn write_region_sat(loops: &[(Vec<draftcraft_geom::PolyVertex>, bool)]) -> Result<String> {
+    Ok(model::sat(&region::region_records(loops)?, 1))
+}
+
+/// A region as SAB, save format 700: what a REGION's data store record holds from 2013.
+pub fn write_region_sab(loops: &[(Vec<draftcraft_geom::PolyVertex>, bool)]) -> Result<Vec<u8>> {
+    Ok(model::sab(&region::region_records(loops)?, 1))
 }
 
 #[cfg(test)]

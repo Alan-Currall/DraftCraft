@@ -72,7 +72,12 @@ Side note: every DXF draws the warning "unknown header variable `$CTABLESTYLE`".
 - **To check in AutoCAD:** save `solids-free-2018.dwg` from DraftCraft as DWG/DXF 2000, 2010, 2013, 2018; open each; MASSPROP against `acad-ref/mp-free-*.mpr`; AUDIT.
 
 ### 1.3 Other 3D entities from AutoCAD
-- **REGION** (2D, a single planar face) and **BODY**: today they stay as foreign data. Read them as regions and solids; write them as REGION and BODY.
+- **REGION** and **BODY**: done in code (`crates/solid/src/acis/region.rs`, `crates/io/src/solid_acis.rs`).
+  - A REGION's ACIS data (a sheet body: flat faces, `double out`, one coedge per edge) is read into a DraftCraft `Region` when its faces lie on the XY plane and its edges are lines and arcs (a whole circle becomes two half turns); the loops are renested. Otherwise it stays as saved, with a read note ("1 region is kept as AutoCAD saved it …").
+  - A `Region` is saved as a REGION: SAT 400 (2000–2010) or SAB 700 in the data store (2013+), one lump per outer loop with its holes, a plane face on z = 0 with normal +Z, outer loops counter-clockwise and holes clockwise, lines as `straight-curve`, arcs as `ellipse-curve` (ratio 1). If the writer refuses it (no area), it keeps the polyline form.
+  - A BODY whose data reads as a solid opens as a `Solid3d` with `body_entity: true` and is saved as a BODY again (no `AcDb3dSolid` subclass). A BODY that is a sheet or a wire stays as saved. The interim form doesn't record `body_entity`.
+  - Tests: `regions_round_trip_through_acis`, `hostile_regions_never_crash` (solid crate); `regions_save_as_autocad_regions_in_every_version`, `a_body_is_saved_as_a_body_again`, `hostile_region_groups_are_kept_and_never_crash` (io).
+  - **Checked in AutoCAD 2027 (2026-11-15):** AutoCAD's own REGION samples (`acad-solids/regions-*`, MASSPROP in `README-regions.md`) open with the same area, perimeter and centroid; DraftCraft's regions in DXF/DWG 2000–2018 open in AutoCAD as REGIONs, same MASSPROP, AUDIT 0 errors, EXTRUDE works. A BODY written by DraftCraft is not checked in AutoCAD yet (AutoCAD has no command that makes a BODY to compare with).
 - **Surfaces:** PLANESURF, NURBSURF, EXTRUDEDSURFACE, LOFTEDSURFACE, SWEPTSURFACE, REVOLVEDSURFACE. These need a "surface" entity in the document.
 - **MESH** (subdivision mesh, `MESH` entity): read, draw and write it.
 - **A 3DSOLID with several separate lumps:** today it is refused and kept as saved ("several separate solids"). Read it as one solid with several lumps, if solidcore allows it, or split it.
@@ -180,7 +185,7 @@ All fourteen are fixed, each with a regression test:
 
 1. Check in AutoCAD the `round3` files: SAT 400 in DWG 2000/2010 and the cone. Then re-check every version.
 2. Check NURBS solids in AutoCAD (1.1 and 1.2 are written).
-3. REGION and BODY (1.3), DWG 2004–2010 with SAB (1.4).
+3. REGION and BODY (1.3, done; regions checked in AutoCAD), DWG 2004–2010 with SAB (1.4).
 4. 3D UCS, 3D snaps, selecting parts of a solid, grips (3).
 5. PRESSPULL, SWEEP, LOFT, SOLIDEDIT on faces (2).
 6. STEP import/export (1.5).

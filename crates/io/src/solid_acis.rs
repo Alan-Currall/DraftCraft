@@ -1,4 +1,4 @@
-//! 3D solids as AutoCAD keeps them: a 3DSOLID entity whose shape is ACIS data (docs/solids.md,
+//! 3D solids and regions as AutoCAD keeps them: a 3DSOLID, REGION or BODY entity whose shape is ACIS data (docs/solids.md,
 //! "The ACIS translator"). Up to AutoCAD 2010 the entity holds it as SAT text in its groups 1
 //! and 3, scrambled; from AutoCAD 2013 the file's data store holds it as SAB, keyed by the
 //! entity's handle, and the entity holds a GUID.
@@ -10,13 +10,16 @@
 //!   3DSOLID for the file's version ([`for_saving`]); one it can't (a body with free-form
 //!   surfaces, not written as ACIS yet) keeps the interim form, a mesh with the exact body
 //!   (`solid_file`).
+//! - A REGION (a flat sheet of ACIS faces) opens as a DraftCraft region when its faces lie on
+//!   the XY plane and its edges are lines and arcs, and a region is saved as a REGION. A BODY
+//!   holding a solid opens as a solid that is saved as a BODY again.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use draftcraft_doc::foreign::{data_store_owner, data_store_records};
-use draftcraft_doc::{Drawing, Entity, EntityKind, EntityStore, Handle, RawTag, Solid3d, SolidLook, Unknown};
+use draftcraft_doc::{Drawing, Entity, EntityKind, EntityStore, Handle, HatchLoop, RawTag, Region, Solid3d, SolidLook, Unknown};
 use draftcraft_dxf::Version;
 use draftcraft_geom::Mat4;
 use draftcraft_solid::{Body, acis};
@@ -32,8 +35,31 @@ fn tag(code: i32, value: impl Into<String>) -> RawTag {
     RawTag { code, value: value.into() }
 }
 
-fn is_3dsolid(u: &Unknown) -> bool {
-    u.dxf_type.trim().eq_ignore_ascii_case("3DSOLID")
+/// The solid modeler entities: AutoCAD's 3DSOLID, REGION and BODY.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Modeler {
+    Solid,
+    Region,
+    Body,
+}
+
+impl Modeler {
+    fn of(u: &Unknown) -> Option<Modeler> {
+        let t = u.dxf_type.trim();
+        [("3DSOLID", Modeler::Solid), ("REGION", Modeler::Region), ("BODY", Modeler::Body)]
+            .into_iter()
+            .find_map(|(name, m)| t.eq_ignore_ascii_case(name).then_some(m))
+    }
+
+    /// "1 3D solid is", "2 regions are"…
+    fn count(self, n: usize) -> String {
+        let (one, many) = match self {
+            Modeler::Solid => ("3D solid", "3D solids"),
+            Modeler::Region => ("region", "regions"),
+            Modeler::Body => ("body", "bodies"),
+        };
+        if n == 1 { format!("1 {one} is") } else { format!("{n} {many} are") }
+    }
 }
 
 /// Every entity store of the drawing: model space, the layouts, the block definitions.
@@ -43,7 +69,7 @@ fn for_each_store(d: &mut Drawing, mut f: impl FnMut(&mut EntityStore)) {
         f(&mut l.entities);
     }
     for b in d.blocks.values_mut() {
-        if b.entities.iter().any(|e| matches!(e.kind, EntityKind::Unknown(_) | EntityKind::Solid3d(_))) {
+        if b.entities.iter().any(|e| matches!(e.kind, EntityKind::Unknown(_) | EntityKind::Solid3d(_) | EntityKind::Region(_))) {
             f(&mut Arc::make_mut(b).entities);
         }
     }
@@ -120,16 +146,32 @@ fn solid_of(body: &Body) -> Result<Solid3d, String> {
         faces: u32::try_from(body.face_count()).unwrap_or(u32::MAX),
         edges: u32::try_from(body.edge_count()).unwrap_or(u32::MAX),
         volume: body.mass().map(|m| m.volume).unwrap_or(0.0),
+        body_entity: false,
     })
 }
 
-/// The solid an AutoCAD 3DSOLID describes, from its SAT text or its data store record.
+/// A modeler entity's ACIS data: its data store record's SAB, or its SAT text.
+fn acis_data<'a>(u: &Unknown, sab: Option<&'a Vec<u8>>) -> Result<Cow<'a, [u8]>, String> {
+    match (sab, sat_text(&u.tags)) {
+        (Some(sab), _) => Ok(Cow::Borrowed(sab.as_slice())),
+        (None, Some(sat)) => Ok(Cow::Owned(sat)),
+        (None, None) => Err("it holds no ACIS data".into()),
+    }
+}
+
+/// The region an AutoCAD REGION describes: its loops, outer and island as they nest.
+fn region_of(u: &Unknown, sab: Option<&Vec<u8>>) -> Result<Region, String> {
+    let loops = acis::read_region(&acis_data(u, sab)?).map_err(|e| e.0)?;
+    let mut r = Region { loops: loops.into_iter().map(|vertices| HatchLoop { vertices, outer: true, sources: Vec::new() }).collect() };
+    if !r.renest() {
+        return Err("too many loops".into());
+    }
+    Ok(r)
+}
+
+/// The solid an AutoCAD 3DSOLID or BODY describes, from its SAT text or its data store record.
 fn adopt_one(u: &Unknown, sab: Option<&Vec<u8>>) -> Result<Solid3d, String> {
-    let data = match (sab, sat_text(&u.tags)) {
-        (Some(sab), _) => Cow::Borrowed(sab.as_slice()),
-        (None, Some(sat)) => Cow::Owned(sat),
-        (None, None) => return Err("it holds no ACIS data".into()),
-    };
+    let data = acis_data(u, sab)?;
     let bodies = acis::read(&data).map_err(|e| e.0)?;
     match bodies.as_slice() {
         [one] => solid_of(one),
@@ -138,27 +180,34 @@ fn adopt_one(u: &Unknown, sab: Option<&Vec<u8>>) -> Result<Solid3d, String> {
     }
 }
 
-/// Turn every AutoCAD 3DSOLID of `d` whose ACIS data the kernel reads into a DraftCraft solid.
+/// Turn every AutoCAD 3DSOLID and BODY of `d` whose ACIS data the kernel reads into a DraftCraft
+/// solid, and every REGION into a DraftCraft region.
 /// A record of the data store that became a solid is dropped (saving writes the solid's own).
 pub(crate) fn adopt(d: &mut Drawing) {
     let stored = stored_sab(&d.foreign.data_store);
     let mut adopted: Vec<Handle> = Vec::new();
-    let mut failed: BTreeMap<String, usize> = BTreeMap::new();
+    let mut failed: BTreeMap<(Modeler, String), usize> = BTreeMap::new();
     let mut n = 0usize;
     for_each_store(d, |st| {
-        let hs: Vec<Handle> = st.iter().filter(|e| matches!(&e.kind, EntityKind::Unknown(u) if is_3dsolid(u))).map(|e| e.handle).collect();
+        let hs: Vec<Handle> = st.iter().filter(|e| matches!(&e.kind, EntityKind::Unknown(u) if Modeler::of(u).is_some())).map(|e| e.handle).collect();
         for h in hs {
             if n >= MAX_SOLIDS {
                 return;
             }
             n += 1;
             let Some(EntityKind::Unknown(u)) = st.get(h).map(|e| &e.kind) else { continue };
-            match adopt_one(u, stored.get(&h)) {
-                Ok(so) => {
-                    let _ = st.modify(h, |e| e.kind = EntityKind::Solid3d(so));
+            let Some(kind) = Modeler::of(u) else { continue };
+            let made = match kind {
+                Modeler::Solid => adopt_one(u, stored.get(&h)).map(EntityKind::Solid3d),
+                Modeler::Body => adopt_one(u, stored.get(&h)).map(|so| EntityKind::Solid3d(Solid3d { body_entity: true, ..so })),
+                Modeler::Region => region_of(u, stored.get(&h)).map(EntityKind::Region),
+            };
+            match made {
+                Ok(k) => {
+                    let _ = st.modify(h, |e| e.kind = k);
                     adopted.push(h);
                 }
-                Err(why) => *failed.entry(why).or_default() += 1,
+                Err(why) => *failed.entry((kind, why)).or_default() += 1,
             }
         }
     });
@@ -181,8 +230,8 @@ pub(crate) fn adopt(d: &mut Drawing) {
         }
         f.data_store = kept;
     }
-    for (why, count) in failed {
-        let what = if count == 1 { "1 3D solid is".to_string() } else { format!("{count} 3D solids are") };
+    for ((kind, why), count) in failed {
+        let what = kind.count(count);
         d.read_notes.push(format!("{what} kept as AutoCAD saved it: its ACIS data can't be read yet ({why})."));
     }
 }
@@ -266,16 +315,34 @@ fn as_3dsolid(e: &Entity, so: &Solid3d, version: Version) -> Option<(Unknown, Op
         sat_groups(&acis::scramble(&sat), &mut tags);
         None
     };
-    if version >= Version::R2007 {
+    if version >= Version::R2007 && !so.body_entity {
         tags.extend([tag(100, "AcDb3dSolid"), tag(350, "0")]);
     }
-    Some((Unknown { dxf_type: "3DSOLID".into(), tags }, sab))
+    Some((Unknown { dxf_type: if so.body_entity { "BODY" } else { "3DSOLID" }.into(), tags }, sab))
 }
 
-/// `d` with every solid the ACIS writer can describe as AutoCAD's own 3DSOLID for a file of
-/// `version`; `d` itself when it has none.
+/// The REGION entity for a region in a file of `version`, and its SAB for the data store (2013
+/// and later). `None` when the region has no area to write (it keeps its polylines).
+fn as_region(e: &Entity, r: &Region, version: Version) -> Option<(Unknown, Option<Vec<u8>>)> {
+    let loops: Vec<(Vec<draftcraft_geom::PolyVertex>, bool)> = r.loops.iter().map(|l| (l.vertices.clone(), l.outer)).collect();
+    let mut tags = vec![tag(100, "AcDbModelerGeometry")];
+    let sab = if version >= Version::R2013 {
+        let sab = acis::write_region_sab(&loops).ok()?;
+        tags.extend([tag(290, "1"), tag(2, guid(e.handle, &sab))]);
+        Some(sab)
+    } else {
+        let sat = acis::write_region_sat(&loops).ok()?;
+        tags.push(tag(70, "1"));
+        sat_groups(&acis::scramble(&sat), &mut tags);
+        None
+    };
+    Some((Unknown { dxf_type: "REGION".into(), tags }, sab))
+}
+
+/// `d` with every solid the ACIS writer can describe as AutoCAD's own 3DSOLID (or BODY) for a file
+/// of `version`, and every region as a REGION; `d` itself when it has none.
 pub(crate) fn for_saving(d: &Drawing, version: Version) -> Cow<'_, Drawing> {
-    let has = |s: &EntityStore| s.iter().any(|e| matches!(e.kind, EntityKind::Solid3d(_)));
+    let has = |s: &EntityStore| s.iter().any(|e| matches!(e.kind, EntityKind::Solid3d(_) | EntityKind::Region(_)));
     if !has(&d.model) && !d.layouts.iter().any(|l| has(&l.entities)) && !d.blocks.values().any(|b| has(&b.entities)) {
         return Cow::Borrowed(d);
     }
@@ -283,7 +350,7 @@ pub(crate) fn for_saving(d: &Drawing, version: Version) -> Cow<'_, Drawing> {
     let mut sabs: Vec<(Handle, Vec<u8>)> = Vec::new();
     let mut n = 0usize;
     for_each_store(&mut d, |st| {
-        let hs: Vec<Handle> = st.iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_))).map(|e| e.handle).collect();
+        let hs: Vec<Handle> = st.iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_) | EntityKind::Region(_))).map(|e| e.handle).collect();
         for h in hs {
             if n >= MAX_SOLIDS {
                 return;
@@ -291,6 +358,7 @@ pub(crate) fn for_saving(d: &Drawing, version: Version) -> Cow<'_, Drawing> {
             n += 1;
             let Some(made) = st.get(h).and_then(|e| match &e.kind {
                 EntityKind::Solid3d(so) => as_3dsolid(e, so, version),
+                EntityKind::Region(r) => as_region(e, r, version),
                 _ => None,
             }) else {
                 continue;

@@ -108,3 +108,63 @@ fn a_cone_apex_is_a_point_edge_loop() {
         assert!(sat.lines().filter(|l| l.starts_with("edge ")).all(|l| l.split_whitespace().nth(5) != Some("$-1")), "{sat}");
     }
 }
+
+/// The area of loops read back: outer loops counter-clockwise add, holes clockwise take away.
+fn signed_area(loops: &[Vec<draftcraft_geom::PolyVertex>]) -> f64 {
+    loops.iter().map(|l| draftcraft_geom::Polyline { vertices: l.clone(), closed: true }.area()).sum()
+}
+
+#[test]
+fn regions_round_trip_through_acis() {
+    use draftcraft_geom::{PolyVertex, Vec2};
+    let p = |x: f64, y: f64, b: f64| PolyVertex::with_bulge(Vec2::new(x, y), b);
+    // A 100 × 60 plate (drawn clockwise: written counter-clockwise) with a round end, a circular
+    // hole of radius 10 and a square hole; and a separate disc of radius 5.
+    let plate = vec![p(0.0, 0.0, 0.0), p(0.0, 60.0, 0.0), p(100.0, 60.0, -1.0), p(100.0, 0.0, 0.0)];
+    let circle = vec![p(30.0, 30.0, 1.0), p(50.0, 30.0, 1.0)];
+    let square = vec![p(60.0, 20.0, 0.0), p(70.0, 20.0, 0.0), p(70.0, 30.0, 0.0), p(60.0, 30.0, 0.0)];
+    let disc = vec![p(200.0, 0.0, 1.0), p(210.0, 0.0, 1.0)];
+    let loops = vec![(plate, true), (circle, false), (square, false), (disc, true)];
+    let pi = std::f64::consts::PI;
+    let want = 100.0 * 60.0 + pi * 30.0 * 30.0 / 2.0 - pi * 100.0 - 100.0 + pi * 25.0;
+    let sat = write_region_sat(&loops).expect("SAT");
+    assert!(sat.starts_with("400 ") && sat.contains("double out"), "{sat}");
+    // One lump a face: the plate and the disc.
+    assert_eq!(sat.lines().filter(|l| l.starts_with("lump ")).count(), 2, "{sat}");
+    for (form, data) in
+        [("SAT", sat.clone().into_bytes()), ("scrambled SAT", scramble(&sat).into_bytes()), ("SAB", write_region_sab(&loops).expect("SAB"))]
+    {
+        let back = read_region(&data).unwrap_or_else(|e| panic!("{form}: {e}\n{sat}"));
+        assert_eq!(back.len(), 4, "{form}: {back:?}");
+        let got = signed_area(&back);
+        assert!(close(got, want, 1e-9), "{form}: area {got}, want {want}\n{sat}");
+        // The bounds of every loop are what was written.
+        let xs: Vec<f64> = back.iter().flatten().map(|v| v.p.x).collect();
+        assert!(xs.iter().all(|x| (-1e-9..=210.0 + 1e-9).contains(x)), "{form}: {xs:?}");
+    }
+    // A region isn't a solid, and a solid isn't a region.
+    assert!(read(sat.as_bytes()).is_err());
+    let cube = write_sat(&box_solid(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0)).expect("box")).expect("SAT");
+    assert!(read_region(cube.as_bytes()).is_err());
+}
+
+#[test]
+fn hostile_regions_never_crash() {
+    use draftcraft_geom::{PolyVertex, Vec2};
+    let p = |x: f64, y: f64, b: f64| PolyVertex::with_bulge(Vec2::new(x, y), b);
+    // Nothing to write: no loops, degenerate loops, not-a-number corners.
+    assert!(write_region_sat(&[]).is_err());
+    assert!(write_region_sat(&[(vec![p(0.0, 0.0, 0.0)], true)]).is_err());
+    assert!(write_region_sat(&[(vec![p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0)], true)]).is_err());
+    assert!(write_region_sat(&[(vec![p(f64::NAN, 0.0, 0.0), p(1.0, f64::INFINITY, 0.0), p(0.0, 1.0, f64::NAN)], true)]).is_err());
+    // A hole alone has no face to go in.
+    assert!(write_region_sat(&[(vec![p(0.0, 0.0, 0.0), p(1.0, 0.0, 0.0), p(1.0, 1.0, 0.0)], false)]).is_err());
+    // Garbled data: an error, never a panic.
+    let sat = write_region_sat(&[(vec![p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.5), p(10.0, 10.0, 0.0), p(0.0, 10.0, 0.0)], true)]).expect("SAT");
+    for cut in (0..sat.len()).step_by(37) {
+        let _ = read_region(sat.get(..cut).unwrap_or("").as_bytes());
+        let garbled: String = sat.chars().enumerate().map(|(i, c)| if i >= cut && c.is_ascii_digit() { '9' } else { c }).collect();
+        let _ = read_region(garbled.as_bytes());
+    }
+    assert!(read_region(&[]).is_err());
+}

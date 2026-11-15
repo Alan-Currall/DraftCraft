@@ -127,6 +127,7 @@ pub(crate) fn solid_kind(body: &Body, placement: Mat4) -> Result<EntityKind> {
         faces: u32::try_from(body.face_count()).unwrap_or(u32::MAX),
         edges: u32::try_from(body.edge_count()).unwrap_or(u32::MAX),
         volume,
+        body_entity: false,
     }))
 }
 
