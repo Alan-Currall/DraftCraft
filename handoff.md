@@ -16,7 +16,7 @@ Written 2026-11-15. Branch `feat/solids-3d`, PR https://github.com/SkryxDev/Draf
 - *3D Modeling* ribbon tab.
 - **ACIS translator:**
   - AutoCAD 3DSOLIDs (SAT and SAB) open as editable solids. Tested against drawings made in AutoCAD 2027: volume and centroid match MASSPROP to four decimals.
-  - DraftCraft solids save as real 3DSOLIDs: SAT 700 for 2000–2010, SAB in the ACDSDATA data store for 2013+.
+  - DraftCraft solids save as real 3DSOLIDs, NURBS faces included: SAT 400 for 2000–2010, SAB 700 in the ACDSDATA data store for 2013+.
   - Code: `crates/solid/src/acis/` (`read.rs`, `write.rs`, `model.rs`) and `crates/io/src/solid_acis.rs`.
   - Test drawings: `crates/io/tests/data/acad-solids/`.
 
@@ -41,7 +41,7 @@ Side note: every DXF draws the warning "unknown header variable `$CTABLESTYLE`".
 ## 1. File compatibility (top priority)
 
 ### 1.1 Free-form (NURBS) solids, reading — done, not yet checked in AutoCAD
-- AutoCAD's LOFT and SWEEP-along-HELIX solids in `solids-free-2018.dwg` now open as solids. Test: `autocad_free_form_solids_read`.
+- AutoCAD's LOFT and SWEEP-along-HELIX solids open as solids from DXF 2000 (SAT 400), DXF 2010 (ASM text 21500) and DWG 2018 (SAB in the data store), volume and centroid as MASSPROP. Test: `autocad_free_form_solids_read`.
 - How (`crates/solid/src/acis/read.rs`):
   - **ACIS pcurves.** `impl Trims for Kernel` hands the kernel ACIS's own pcurves on spline faces (`Kernel::given`). The data's face is matched to the kernel's `TrimFace` by each use's edge ends and direction, trying the loop both ways.
     - A reversed coedge's pcurve is turned round (`pcurve`).
@@ -49,19 +49,27 @@ Side note: every DXF draws the warning "unknown header variable `$CTABLESTYLE`".
     - Periodic pcurves (clamped knots) are accepted.
   - **Parameter mapping.** Where the kernel's edge parameter differs from ACIS's (record circles in quarter turns, lines on [0, 1]), the pcurve is resampled onto it (`remapped`: a Hermite cubic through 32 spans). The ACIS parameter of each point comes from the edge's own curve (`AcisParam`) and its range (`EdgeParam`).
   - **Helix edges.** A procedural helix becomes a cubic spline of 64 Bézier spans per turn (`helix_spline`), at most 2^16 spans.
+  - **ACIS 4 short names.** cadmpeg matches a coedge's pcurve only as `exp_par_cur`; SAT 400 writes `exppc`. `long_names` renames it in the parsed records before decoding.
+  - **Edges without parameters.** SAT 400 keeps no parameter range on an edge: a circle edge's range comes from its ends' angles (`edge_param_of`).
+  - **What cadmpeg only reads word by word** (`read/legacy.rs`, filled into the decoded B-rep):
+    - SAT 400's `parcur` (AutoCAD 2000's SWEEP rail): its B-spline cache becomes the edge's curve, and the two pcurves that point into it (`pcurve $-1 ±1 $curve du dv`) its coedges' pcurves;
+    - ASM text's procedural surfaces (`loft_spl_sur`, `sweep_sur` in DXF 2004–2010): the `full nubs …` cache at the subtype's own depth, `{ ref k }` resolved to the k-th subtype written;
+    - ASM text's `helix_int_cur`: the same 64-spans-per-turn spline as the binary form.
   - **Closed circle edges.** The circle's reference passes through the vertex, nudged a few roundings until solidcore's STEP reader puts the vertex exactly at angle 0 (`closed_circle_placement`). Otherwise the kernel starts the turn a whole turn later and refuses the form.
 - **Still open:**
   - a helix with `apex_factor ≠ 0` (a conical helix) is refused;
   - a pcurve with `wrapper_reversed` is refused;
   - other procedural curves (offset, intersection) have no definition yet.
 
-### 1.2 Free-form (NURBS) solids, writing (W3)
-- `crates/solid/src/acis/write.rs` refuses B-spline curves and surfaces. A DraftCraft solid with such faces is saved in the interim form (polyface mesh plus the exact body in an XRECORD), and AutoCAD sees a mesh.
-- To do:
-  - `spline-surface` with `exact_spl_sur` (the bs3 surface inline);
-  - `intcurve` with `exact_int_cur`;
-  - the coedges' `pcurve` records (`exp_par_cur`).
-- Layouts: Spatial's published ones, checked by reading them back through cadmpeg-asm (as the current tests do).
+### 1.2 Free-form (NURBS) solids, writing — done, not yet checked in AutoCAD
+- `crates/solid/src/acis/write.rs` writes B-spline faces and edges:
+  - `spline-surface { exactsur nubs|nurbs … }`, the poles with u running fastest, the three discontinuity lists per direction, a periodic direction's seam knot first (`spline_surface`, `periodic`);
+  - `intcurve-curve { exactcur … }` for a B-spline edge (`exact_curve`);
+  - a `pcurve { exppc … spline forward { ref k } … }` on every coedge of a spline face, on the coedge's parameter (a reversed coedge's knots negated), `ref k` counting the subtypes written (`Bs2::record`, `layout`). A face on a spline surface keeps its seams.
+- **SAT** (DWG/DXF 2000–2010) is laid out as AutoCAD 2000 writes its own LOFT and SWEEP (`acad-ref/solids-free-2000.dxf`).
+- **SAB** (2013+) stays save format 700, as the analytic solids AutoCAD already opened. The subtypes are named in full (`exact_spl_sur`, `exact_int_cur`, `exp_par_cur`), with the later formats' fields (`Tok::Sab`): the cache form `full` before the spline; after a surface's discontinuity lists one false (as AutoCAD 2018's data store ends a spline surface's cache) instead of SAT 400's `F 1 F 0 F 1 F 0`; after a curve's lists no extension and two unbounded ends. **This tail is the least certain part:** if AutoCAD refuses a NURBS solid from DWG 2013/2018 while it opens from DWG 2010, look here first.
+- Test: `autocad_free_form_solids_write_back` (AutoCAD's loft and sweep written as SAT and SAB and read again, the same volume).
+- **To check in AutoCAD:** save `solids-free-2018.dwg` from DraftCraft as DWG/DXF 2000, 2010, 2013, 2018; open each; MASSPROP against `acad-ref/mp-free-*.mpr`; AUDIT.
 
 ### 1.3 Other 3D entities from AutoCAD
 - **REGION** (2D, a single planar face) and **BODY**: today they stay as foreign data. Read them as regions and solids; write them as REGION and BODY.
@@ -152,7 +160,7 @@ Each one is a `CommandSpec` in `crates/engine/src/cmd/solids/*`, with tests, a r
 ## Recommended order
 
 1. Check in AutoCAD the `round3` files: SAT 400 in DWG 2000/2010 and the cone. Then re-check every version.
-2. NURBS solids, writing (1.2); reading (1.1) is done.
+2. Check NURBS solids in AutoCAD (1.1 and 1.2 are written).
 3. REGION and BODY (1.3), DWG 2004–2010 with SAB (1.4).
 4. 3D UCS, 3D snaps, selecting parts of a solid, grips (3).
 5. PRESSPULL, SWEEP, LOFT, SOLIDEDIT on faces (2).

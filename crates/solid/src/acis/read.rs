@@ -23,6 +23,8 @@ use solidcore_step::p21::Param;
 use solidcore_step::write::{GeomWriter, Writer};
 
 use super::model::{SAB_MAGIC, scramble};
+
+mod legacy;
 use crate::body::{Body, Result, SolidError};
 
 fn err(m: impl Into<String>) -> SolidError {
@@ -89,17 +91,13 @@ fn decode_text(data: &[u8]) -> Result<(Value, f64)> {
     // The decoder turns the text's units into millimetres with the header's millimetres per
     // unit; a drawing takes the coordinates as they are written, so that factor comes back off.
     let scale = Some(parsed.header.scale().get()).filter(|s| s.is_finite() && *s > 0.0).unwrap_or(1.0);
-    let brep = cadmpeg_asm::brep::decode_with_header(
-        &ctx,
-        &parsed.records,
-        &bytes,
-        Some(&header),
-        "acis",
-        format_id()?,
-        cadmpeg_asm::brep::DecodePurpose::Model,
-    )
-    .map_err(decode_error)?;
-    Ok((serde_json::to_value(&brep).map_err(decode_error)?, scale))
+    let records = long_names(parsed.records);
+    let brep =
+        cadmpeg_asm::brep::decode_with_header(&ctx, &records, &bytes, Some(&header), "acis", format_id()?, cadmpeg_asm::brep::DecodePurpose::Model)
+            .map_err(decode_error)?;
+    let mut value = serde_json::to_value(&brep).map_err(decode_error)?;
+    legacy::fill(&mut value, &records, scale);
+    Ok((value, scale))
 }
 
 fn decode_binary(data: &[u8]) -> Result<(Value, f64)> {
@@ -120,6 +118,7 @@ fn decode_binary(data: &[u8]) -> Result<(Value, f64)> {
     let limit = end_marker(data, start).map_or(limit, |end| end.min(limit));
     let records = cadmpeg_asm::sab::frame(&ctx, data, start, limit, header.width, None)
         .map_err(|e| err(format!("the solid's ACIS data can't be read ({e:?})")))?;
+    let records = long_names(records);
     // The decoder reads binary lengths as centimetres and returns millimetres; a drawing takes
     // the coordinates as they are written, so that factor comes back off.
     let scale = BINARY_MM_PER_UNIT;
@@ -134,6 +133,36 @@ fn decode_binary(data: &[u8]) -> Result<(Value, f64)> {
     )
     .map_err(decode_error)?;
     Ok((serde_json::to_value(&brep).map_err(decode_error)?, scale))
+}
+
+/// The records with ACIS 4's short subtype names spelt as the decoder looks them up.
+///
+/// Save format 400 (AutoCAD's DWG 2000, and what [`super::write`] writes for NURBS faces)
+/// names a coedge's pcurve `exppc`; the decoder matches only the long `exp_par_cur`, and a
+/// pcurve it doesn't match is lost, so the face can't be trimmed. Only a payload identifier
+/// that is exactly the short name changes.
+fn long_names(records: Vec<cadmpeg_asm::sab::Record>) -> Vec<cadmpeg_asm::sab::Record> {
+    use cadmpeg_asm::sab::Token;
+    const SHORT: [(&str, &str); 1] = [("exppc", "exp_par_cur")];
+    let short = |t: &Token| matches!(t, Token::Ident(n) | Token::SubIdent(n) if SHORT.iter().any(|(s, _)| s == n));
+    records
+        .into_iter()
+        .map(|mut r| {
+            if r.tokens.iter().any(short) {
+                let tokens: Vec<Token> = r
+                    .tokens
+                    .iter()
+                    .map(|t| match t {
+                        Token::Ident(n) => Token::Ident(SHORT.iter().find(|(s, _)| s == n).map_or_else(|| n.clone(), |(_, l)| (*l).to_owned())),
+                        Token::SubIdent(n) => Token::SubIdent(SHORT.iter().find(|(s, _)| s == n).map_or_else(|| n.clone(), |(_, l)| (*l).to_owned())),
+                        other => other.clone(),
+                    })
+                    .collect();
+                r.tokens = tokens.into();
+            }
+            r
+        })
+        .collect()
 }
 
 /// The items of one list of the decoded B-rep, by id.
@@ -825,10 +854,21 @@ fn edge_param_of(c: Option<&Curve>, e: &Value, ends: Option<&(P3, P3)>) -> Optio
             let (pa, pz) = ends?;
             [how.at(*pa, 0.0), how.at(*pz, 0.0)]
         }
-        AcisParam::Conic { .. } => {
-            let r = e.get("carrier").and_then(|c| c.get("param_range")).and_then(Value::as_array)?;
-            [r.first()?.as_f64()?, r.get(1)?.as_f64()?]
-        }
+        AcisParam::Conic { .. } => match e.get("carrier").and_then(|c| c.get("param_range")).and_then(Value::as_array) {
+            Some(r) => [r.first()?.as_f64()?, r.get(1)?.as_f64()?],
+            // Save format 400 keeps no parameter range on an edge (AutoCAD's DWG 2000): the
+            // angles of its ends, going round the way the edge runs (along its curve), a whole
+            // turn when they meet.
+            None => {
+                let (pa, pz) = ends?;
+                let a = how.at(*pa, 0.0);
+                let mut z = how.at(*pz, a + std::f64::consts::PI);
+                if z <= a + 1e-12 {
+                    z += std::f64::consts::TAU;
+                }
+                [a, z]
+            }
+        },
     };
     Some(EdgeParam { how, range })
 }

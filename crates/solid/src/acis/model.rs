@@ -11,6 +11,14 @@
 //! (null here) and, from format 700, its history index and one more reference (null). SAT writes
 //! each field as a word; SAB writes the same fields as tagged binary tokens, one tag byte and its
 //! little-endian value.
+//!
+//! A spline surface, curve or pcurve holds a subtype ([`Tok`]): `{ exactsur nubs 3 3 open … }`,
+//! laid out as AutoCAD writes it in SAT 400 (its DXF 2000 files). SAB names the subtypes in
+//! full (`exact_spl_sur`), writes the words as identifiers, the closures and singularities as
+//! enumerations, and the numbers as integers and reals, as AutoCAD's data store does, with the
+//! later formats' fields: the cache form (`full`) before a spline's data, and the tails AutoCAD's
+//! data store records end with ([`Tok::Sat`] and [`Tok::Sab`] hold what one encoding has and the
+//! other hasn't).
 
 /// One field of a record.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +43,35 @@ pub(crate) enum Field {
     ForwardV,
     /// An unbounded parameter range end (SAT `I`).
     Infinite,
+    /// An integer (a pcurve's kind).
+    Int(i64),
+    /// A subtype: its tokens between the braces, the braces included.
+    Sub(Vec<Tok>),
+}
+
+/// One token of a subtype.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Tok {
+    Open,
+    Close,
+    /// A subtype's name: SAT's short one and SAB's full one (`exactsur`, `exact_spl_sur`).
+    Name(&'static str, &'static str),
+    /// A word: `nubs`, `spline`, `null_surface`…
+    Word(&'static str),
+    /// An enumeration: its SAT word and SAB value (`open` 0, `periodic` 2, `none` 0).
+    Enum(&'static str, i32),
+    Int(i64),
+    Real(f64),
+    /// A sense: forward (false) or reversed (true).
+    Sense(bool),
+    /// A range end: `I` unbounded, `F value` bounded.
+    Bound(Option<f64>),
+    /// A line break in SAT (nothing in SAB): AutoCAD breaks a spline's lists into lines.
+    Line,
+    /// Tokens SAT 400 has and SAB doesn't.
+    Sat(Vec<Tok>),
+    /// Tokens SAB (save format 700 on) has and SAT 400 doesn't.
+    Sab(Vec<Tok>),
 }
 
 /// One record: its name (`plane-surface`, `coedge`…) and its fields.
@@ -75,6 +112,37 @@ fn triple(v: &[f64; 3]) -> String {
     format!("{} {} {}", real(v[0]), real(v[1]), real(v[2]))
 }
 
+/// A subtype's tokens as SAT text, each after a space (a line break before none).
+fn sat_tokens(o: &mut String, toks: &[Tok]) {
+    for t in toks {
+        if matches!(t, Tok::Line) {
+            o.push_str(" \n");
+            continue;
+        }
+        o.push(' ');
+        match t {
+            Tok::Open => o.push('{'),
+            Tok::Close => o.push('}'),
+            Tok::Name(short, _) => o.push_str(short),
+            Tok::Word(w) | Tok::Enum(w, _) => o.push_str(w),
+            Tok::Int(i) => o.push_str(&i.to_string()),
+            Tok::Real(v) => o.push_str(&real(*v)),
+            Tok::Sense(reversed) => o.push_str(if *reversed { "reversed" } else { "forward" }),
+            Tok::Bound(None) => o.push('I'),
+            Tok::Bound(Some(v)) => {
+                o.push_str("F ");
+                o.push_str(&real(*v));
+            }
+            Tok::Sat(toks) => {
+                // The tokens put their own spaces: drop the one pushed above.
+                o.pop();
+                sat_tokens(o, toks);
+            }
+            Tok::Line | Tok::Sab(_) => {}
+        }
+    }
+}
+
 /// The records as SAT text in save format 400, header and end line included, one record a line.
 /// The header counts the records, as AutoCAD's does.
 pub(crate) fn sat(records: &[Record], bodies: usize) -> String {
@@ -96,6 +164,12 @@ pub(crate) fn sat(records: &[Record], bodies: usize) -> String {
                 Field::Single => o.push_str("single"),
                 Field::ForwardV => o.push_str("forward_v"),
                 Field::Infinite => o.push('I'),
+                Field::Int(i) => o.push_str(&i.to_string()),
+                Field::Sub(toks) => {
+                    // The tokens put their own spaces: drop the one pushed above.
+                    o.pop();
+                    sat_tokens(&mut o, toks);
+                }
             }
         }
         o.push_str(" #\n");
@@ -116,8 +190,11 @@ mod tag {
     pub const IDENT: u8 = 0x0d;
     pub const SUB_IDENT: u8 = 0x0e;
     pub const END: u8 = 0x11;
+    pub const SUB_OPEN: u8 = 0x0f;
+    pub const SUB_CLOSE: u8 = 0x10;
     pub const POS: u8 = 0x13;
     pub const VECTOR: u8 = 0x14;
+    pub const ENUM: u8 = 0x15;
 }
 
 fn push_name(o: &mut Vec<u8>, t: u8, s: &str) {
@@ -155,7 +232,35 @@ fn reference(i: Option<usize>) -> i32 {
     i.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1)
 }
 
-/// The records as SAB, header and end marker included.
+/// An integer as SAB's 32-bit one (clamped: no count written comes near).
+fn int32(v: i64) -> i32 {
+    i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX })
+}
+
+/// A subtype's tokens as SAB.
+fn sab_tokens(o: &mut Vec<u8>, toks: &[Tok]) {
+    for t in toks {
+        match t {
+            Tok::Open => o.push(tag::SUB_OPEN),
+            Tok::Close => o.push(tag::SUB_CLOSE),
+            Tok::Name(_, full) => push_name(o, tag::IDENT, full),
+            Tok::Word(w) => push_name(o, tag::IDENT, w),
+            Tok::Enum(_, v) => push_i32(o, tag::ENUM, *v),
+            Tok::Int(i) => push_i32(o, tag::INT, int32(*i)),
+            Tok::Real(v) => push_real(o, *v),
+            Tok::Sense(reversed) => o.push(if *reversed { tag::TRUE } else { tag::FALSE }),
+            Tok::Bound(None) => o.push(tag::FALSE),
+            Tok::Bound(Some(v)) => {
+                o.push(tag::TRUE);
+                push_real(o, *v);
+            }
+            Tok::Sab(toks) => sab_tokens(o, toks),
+            Tok::Line | Tok::Sat(_) => {}
+        }
+    }
+}
+
+/// The records as SAB in save format 700, header and end marker included.
 pub(crate) fn sab(records: &[Record], bodies: usize) -> Vec<u8> {
     let mut o = Vec::new();
     o.extend_from_slice(SAB_MAGIC);
@@ -183,6 +288,8 @@ pub(crate) fn sab(records: &[Record], bodies: usize) -> Vec<u8> {
                 Field::Vector(p) => push_triple(&mut o, tag::VECTOR, p),
                 Field::Sense(reversed) => o.push(if *reversed { tag::TRUE } else { tag::FALSE }),
                 Field::Single | Field::ForwardV | Field::Infinite => o.push(tag::FALSE),
+                Field::Int(i) => push_i32(&mut o, tag::INT, int32(*i)),
+                Field::Sub(toks) => sab_tokens(&mut o, toks),
             }
         }
         o.push(tag::END);

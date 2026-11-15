@@ -1,7 +1,7 @@
 use draftcraft_doc::{Common, Drawing, EntityKind, Space};
 use draftcraft_dxf::Version;
 use draftcraft_geom::{Mat4, Vec3};
-use draftcraft_solid::{Body, box_solid, cylinder};
+use draftcraft_solid::{Body, acis, box_solid, cylinder};
 
 fn data(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/acad-solids").join(name);
@@ -87,7 +87,14 @@ fn autocad_edited_solids_open_as_solids() {
 fn autocad_free_form_solids_read() {
     // LOFT (a spline surface through a circle and a square) and SWEEP of a circle along a helix
     // (a procedural helix, closed circle edges): both read through ACIS's own pcurves.
-    let name = "solids-free-2018.dwg";
+    // DXF 2000 holds SAT 400 (`exactsur`, `exppc`, edges without their parameters), DXF 2010
+    // SAT 700, DWG 2018 the data store's SAB.
+    for name in ["solids-free-2000.dxf", "solids-free-2010.dxf", "solids-free-2018.dwg"] {
+        free_form_read(name);
+    }
+}
+
+fn free_form_read(name: &str) {
     let d = crate::read(&data(name), name).unwrap_or_else(|e| panic!("{name}: {e}"));
     let read = solids(&d);
     let kept = d.model.iter().filter(|e| matches!(&e.kind, EntityKind::Unknown(u) if u.dxf_type == "3DSOLID")).count();
@@ -269,4 +276,34 @@ fn write_files_for_autocad() {
     for (i, (v, c)) in solids(&d).iter().enumerate() {
         println!("#{} volume {v:.4} centroid {:.4}, {:.4}, {:.4}", i + 1, c.x, c.y, c.z);
     }
+}
+
+#[test]
+fn autocad_free_form_solids_write_back() {
+    // The loft's and the sweep's spline faces written as SAT 400 and as SAB (exactsur, exactcur and
+    // exppc, as AutoCAD writes them in DWG 2000), then read again: the same solids.
+    let name = "solids-free-2018.dwg";
+    let d = crate::read(&data(name), name).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let mut n = 0;
+    for e in d.model.iter() {
+        let EntityKind::Solid3d(so) = &e.kind else { continue };
+        let body = super::world_body(so).expect("body");
+        let want = body.mass().expect("mass");
+        let sat = acis::write_sat(&body).unwrap_or_else(|e| panic!("{name}: SAT: {}", e.0));
+        if let Some(dir) = std::env::var_os("DRAFTCRAFT_ACIS_DUMP") {
+            let _ = std::fs::write(std::path::Path::new(&dir).join(format!("free-{n}.sat")), &sat);
+        }
+        let sab = acis::write_sab(&body).unwrap_or_else(|e| panic!("{name}: SAB: {}", e.0));
+        if let Some(dir) = std::env::var_os("DRAFTCRAFT_ACIS_DUMP") {
+            let _ = std::fs::write(std::path::Path::new(&dir).join(format!("free-{n}.sab")), &sab);
+        }
+        for (form, bytes) in [("SAT", sat.into_bytes()), ("SAB", sab)] {
+            let back = acis::read(&bytes).unwrap_or_else(|e| panic!("{name} #{n} {form}: {}", e.0));
+            let [b] = back.as_slice() else { panic!("{name} #{n} {form}: {} bodies", back.len()) };
+            let got = b.mass().expect("mass");
+            assert!((got.volume - want.volume).abs() <= 1e-6 * want.volume, "{name} #{n} {form}: {} vs {}", got.volume, want.volume);
+        }
+        n += 1;
+    }
+    assert_eq!(n, 2);
 }

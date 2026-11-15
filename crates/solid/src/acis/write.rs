@@ -15,7 +15,10 @@
 //! | EDGE_CURVE | edge, its parameters those of its vertices on its curve |
 //! | VERTEX_POINT | vertex and point |
 //! | LINE, CIRCLE, ELLIPSE | straight-curve, ellipse-curve |
+//! | B_SPLINE_CURVE | intcurve-curve holding an `exactcur` |
 //! | PLANE, CYLINDRICAL_ and CONICAL_SURFACE, SPHERICAL_, TOROIDAL_SURFACE | plane-, cone-, sphere-, torus-surface |
+//! | B_SPLINE_SURFACE | spline-surface holding an `exactsur` |
+//! | PCURVE of a SURFACE_CURVE or SEAM_CURVE, on a B-spline face | pcurve holding an `exppc` |
 //!
 //! In both, a face's loops run counter-clockwise about its outward normal. ACIS needs no seam on
 //! a face that goes all the way round (a cylinder's side is bounded by its two circles alone), so
@@ -23,19 +26,24 @@
 //! bounding it is a face without loops (a sphere's poles are no loops either). A cone's apex is
 //! a loop of its own, as AutoCAD writes it: one coedge on an edge with no curve that starts and
 //! ends at the apex vertex. Without it ShapeManager takes the cone for an invalid solid.
-//! Coedges carry no pcurve: the modeller works them out.
 //!
-//! What has no exact ACIS form here yet (B-spline curves and surfaces: lofts, sweeps, fillets
-//! between curved faces) is refused with the reason, and the caller keeps another form.
+//! Spline faces are written as AutoCAD writes a loft's or a sweep's in DWG and DXF 2000: the
+//! surface's B-spline (`nubs`, or `nurbs` with weights) with ACIS's knots (STEP's without the
+//! first and last), poles along u first, and its discontinuities; `periodic` across a seam the
+//! surface closes smoothly over. Such a face keeps its seam edge, and each of its coedges carries
+//! its pcurve: the STEP one, on the ACIS edge's parameter (a linear map: an ACIS line runs on its
+//! length, a circle on its angle, a spline on its own), turned round for a coedge that runs
+//! against its edge, its surface the face's by reference (`ref`, the subtypes counted in file
+//! order). Coedges on analytic faces carry none: the modeller works them out, as AutoCAD's do.
 
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
-use solidcore_step::geom::{Curve, P3, Placement, Surface};
+use solidcore_step::geom::{Associated, BSplineCurve, BSplineSurface, Curve, P3, Placement, Surface};
 use solidcore_step::p21::{Entity, Exchange, Param};
 use solidcore_step::read::{Reader, Units};
 
-use super::model::{Field, Record};
+use super::model::{Field, Record, Tok};
 use crate::body::{Body, Result, SolidError};
 
 fn err(m: impl Into<String>) -> SolidError {
@@ -76,6 +84,8 @@ enum ACurve {
         major: P3,
         ratio: f64,
     },
+    /// A B-spline on its own parameter, the STEP curve's.
+    Spline(Box<BSplineCurve>),
 }
 
 impl ACurve {
@@ -88,6 +98,12 @@ impl ACurve {
                 let e2 = cross(*normal, e1);
                 let d = sub(p, *center);
                 (dot(d, e2) / (a * ratio.max(f64::MIN_POSITIVE))).atan2(dot(d, e1) / a)
+            }
+            // The nearer end of its knot range (an edge's range comes from its pcurves).
+            ACurve::Spline(b) => {
+                let (Some(&k0), Some(&k1)) = (b.knots.first(), b.knots.last()) else { return 0.0 };
+                let d = |q: Option<&P3>| q.map_or(f64::INFINITY, |q| dot(sub(p, *q), sub(p, *q)));
+                if d(b.points.first()) <= d(b.points.last()) { k0 } else { k1 }
             }
         }
     }
@@ -112,8 +128,139 @@ impl ACurve {
                     Field::Infinite,
                 ],
             },
+            ACurve::Spline(b) => {
+                Record { name: "intcurve-curve", fields: vec![Field::Sense(false), Field::Sub(exact_curve(b)), Field::Infinite, Field::Infinite] }
+            }
         }
     }
+}
+
+/// ACIS's knots of a B-spline from STEP's distinct knots and multiplicities: the full vector
+/// without its first and last knot, as (value, multiplicity). `None` when they don't make one.
+fn acis_knots(knots: &[f64], mults: &[usize]) -> Option<Vec<(f64, usize)>> {
+    if knots.len() != mults.len() || knots.is_empty() || knots.len() > MAX_KNOTS {
+        return None;
+    }
+    let mut out: Vec<(f64, usize)> = knots.iter().copied().zip(mults.iter().copied()).collect();
+    if out.iter().any(|(k, m)| !k.is_finite() || *m == 0) || out.windows(2).any(|w| matches!(w, [a, b] if b.0 <= a.0)) {
+        return None;
+    }
+    if let Some(first) = out.first_mut() {
+        first.1 = first.1.checked_sub(1)?;
+    }
+    if let Some(last) = out.last_mut() {
+        last.1 = last.1.checked_sub(1)?;
+    }
+    out.retain(|(_, m)| *m > 0);
+    (!out.is_empty()).then_some(out)
+}
+
+/// Most distinct knots and poles of one spline written.
+const MAX_KNOTS: usize = 1 << 16;
+const MAX_POLES: usize = 1 << 20;
+
+/// The knots as SAT lays them out: value and multiplicity, five to a line.
+fn knot_tokens(t: &mut Vec<Tok>, knots: &[(f64, usize)]) {
+    for (i, (k, m)) in knots.iter().enumerate() {
+        t.push(Tok::Real(*k));
+        t.push(Tok::Int(i64::try_from(*m).unwrap_or(i64::MAX)));
+        if (i + 1) % 5 == 0 || i + 1 == knots.len() {
+            t.push(Tok::Line);
+        }
+    }
+}
+
+/// The three discontinuity lists of one direction (C0, C1, C2): the interior knots whose
+/// multiplicity leaves the spline that many derivatives fewer; across a periodic seam, the seam's
+/// knot first among the smooth ones, as AutoCAD lists it.
+fn discontinuity_tokens(t: &mut Vec<Tok>, knots: &[(f64, usize)], degree: usize, periodic: bool) {
+    let mut lists: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    if periodic
+        && let (Some((k, _)), Some(level)) = (knots.first(), degree.checked_sub(1))
+        && let Some(l) = lists.get_mut(level)
+    {
+        l.push(*k);
+    }
+    for (k, m) in knots.iter().skip(1).take(knots.len().saturating_sub(2)) {
+        if let Some(l) = degree.checked_sub(*m).and_then(|level| lists.get_mut(level)) {
+            l.push(*k);
+        }
+    }
+    for l in lists {
+        t.push(Tok::Int(i64::try_from(l.len()).unwrap_or(i64::MAX)));
+        t.extend(l.into_iter().map(Tok::Real));
+        t.push(Tok::Line);
+    }
+}
+
+fn degree_tok(d: usize) -> Tok {
+    Tok::Int(i64::try_from(d).unwrap_or(i64::MAX))
+}
+
+fn count_tok(n: usize) -> Tok {
+    Tok::Int(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
+const OPEN: Tok = Tok::Enum("open", 0);
+const PERIODIC: Tok = Tok::Enum("periodic", 2);
+
+/// An edge's B-spline as an `exactcur`: its B-spline, fit tolerance 0, no supports and no
+/// pcurves, unbounded, its discontinuities.
+fn exact_curve(b: &BSplineCurve) -> Vec<Tok> {
+    // Checked when the edge was read (`spline_curve`).
+    let knots = acis_knots(&b.knots, &b.multiplicities).unwrap_or_default();
+    let mut t = vec![
+        Tok::Open,
+        Tok::Name("exactcur", "exact_int_cur"),
+        full(),
+        Tok::Word(if b.weights.is_some() { "nurbs" } else { "nubs" }),
+        degree_tok(b.degree),
+        OPEN,
+        count_tok(knots.len()),
+        Tok::Line,
+    ];
+    knot_tokens(&mut t, &knots);
+    for (i, p) in b.points.iter().enumerate() {
+        t.extend(p.iter().map(|x| Tok::Real(*x)));
+        if let Some(w) = b.weights.as_ref().and_then(|w| w.get(i)) {
+            t.push(Tok::Real(*w));
+        }
+        t.push(Tok::Line);
+    }
+    t.extend([
+        Tok::Real(0.0),
+        Tok::Line,
+        Tok::Word("null_surface"),
+        Tok::Word("null_surface"),
+        Tok::Word("nullbs"),
+        Tok::Word("nullbs"),
+        Tok::Bound(None),
+        Tok::Bound(None),
+        Tok::Line,
+    ]);
+    discontinuity_tokens(&mut t, &knots, b.degree, false);
+    // The later formats' tail: no extension, and the unextended range unbounded.
+    t.extend([Tok::Sab(vec![Tok::Int(0), Tok::Bound(None), Tok::Bound(None)]), Tok::Close]);
+    t
+}
+
+/// The cache form the later formats write before a spline's data: the whole spline.
+fn full() -> Tok {
+    Tok::Sab(vec![Tok::Enum("full", 0)])
+}
+
+/// A STEP B-spline curve ACIS can take as an `exactcur`: valid knots, poles and weights.
+fn spline_curve(b: &BSplineCurve) -> Result<ACurve> {
+    let knots = acis_knots(&b.knots, &b.multiplicities).ok_or_else(|| err("a B-spline edge with knots ACIS can't take"))?;
+    let total: usize = knots.iter().map(|(_, m)| m).sum();
+    let ok_weights = b.weights.as_ref().is_none_or(|w| w.len() == b.points.len() && w.iter().all(|x| x.is_finite() && *x > 0.0));
+    if b.degree == 0 || b.points.len() > MAX_POLES || total + 1 != b.points.len() + b.degree || !ok_weights {
+        return Err(err("a B-spline edge whose poles don't match its knots"));
+    }
+    if b.points.iter().flatten().any(|x| !x.is_finite()) {
+        return Err(err("a B-spline edge with a pole that is not a number"));
+    }
+    Ok(ACurve::Spline(Box::new((*b).clone())))
 }
 
 /// The ACIS form of a STEP curve, the edge running along it as its parameter grows.
@@ -139,7 +286,7 @@ fn curve(c: &Curve) -> Result<ACurve> {
         }
         Curve::SurfaceCurve { curve_3d, .. } => curve(curve_3d),
         Curve::Trimmed { basis, .. } => curve(basis),
-        Curve::BSpline(_) => Err(err("a B-spline edge (ACIS spline curves are not written yet)")),
+        Curve::BSpline(b) => spline_curve(b),
         _ => Err(err("an edge curve ACIS has no exact form for here")),
     }
 }
@@ -207,17 +354,235 @@ fn surface(s: &Surface) -> Result<Record> {
                 Field::ForwardV,
             ],
         )),
-        Surface::BSpline(_) => Err(err("a B-spline face (ACIS spline surfaces are not written yet)")),
+        Surface::BSpline(b) => spline_surface(b),
         _ => Err(err("a face surface ACIS has no exact form for here")),
     }
 }
 
-/// One use of an edge in a loop: the edge (into the edge table) and whether the loop runs
-/// against it.
+/// Whether the surface closes smoothly across its u (`along_u`) or v boundaries: its first and
+/// last rows of poles the same and leaving them the same way, its knots clamped there. ACIS's
+/// `periodic`, as AutoCAD marks a sweep's tube.
+fn periodic(b: &BSplineSurface, along_u: bool) -> bool {
+    let (degree, mults) = if along_u { (b.u_degree, &b.u_multiplicities) } else { (b.v_degree, &b.v_multiplicities) };
+    let clamped = mults.first() == Some(&(degree + 1)) && mults.last() == Some(&(degree + 1));
+    let rows: Vec<Vec<P3>> = if along_u {
+        b.points.clone()
+    } else {
+        let n = b.points.first().map_or(0, Vec::len);
+        (0..n).map(|j| b.points.iter().filter_map(|r| r.get(j).copied()).collect()).collect()
+    };
+    let n = rows.len();
+    if !clamped || n < 3 {
+        return false;
+    }
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for p in rows.iter().flatten() {
+        for k in 0..3 {
+            if let (Some(l), Some(h), Some(x)) = (lo.get_mut(k), hi.get_mut(k), p.get(k)) {
+                *l = l.min(*x);
+                *h = h.max(*x);
+            }
+        }
+    }
+    let size = dot(sub(hi, lo), sub(hi, lo)).sqrt().max(1.0);
+    let (Some(first), Some(second), Some(before), Some(last)) = (rows.first(), rows.get(1), rows.get(n - 2), rows.last()) else {
+        return false;
+    };
+    let same = first.iter().zip(last).all(|(a, b)| dot(sub(*a, *b), sub(*a, *b)).sqrt() <= 1e-9 * size);
+    let smooth = first.iter().zip(second).zip(before.iter().zip(last)).all(|((p0, p1), (q0, q1))| {
+        let (a, b) = (sub(*p1, *p0), sub(*q1, *q0));
+        let (na, nb) = (dot(a, a).sqrt(), dot(b, b).sqrt());
+        na <= 1e-12 * size || nb <= 1e-12 * size || dot(a, b) >= (1.0 - 1e-6) * na * nb
+    });
+    let weights = b.weights.as_ref().is_none_or(|w| if along_u { w.first() == w.last() } else { w.iter().all(|r| r.first() == r.last()) });
+    same && smooth && weights && first.len() == last.len()
+}
+
+/// A STEP B-spline surface as a `spline-surface` holding an `exactsur`, laid out as AutoCAD writes
+/// one: degrees, closures, no singularity, the knot counts, both knot lists, the poles along u
+/// first, fit tolerance 0, each direction's discontinuities, and the closing `F 1 F 0 F 1 F 0`.
+fn spline_surface(b: &BSplineSurface) -> Result<Record> {
+    let bad = || err("a B-spline face with knots or poles ACIS can't take");
+    let uk = acis_knots(&b.u_knots, &b.u_multiplicities).ok_or_else(bad)?;
+    let vk = acis_knots(&b.v_knots, &b.v_multiplicities).ok_or_else(bad)?;
+    let (nu, nv) = (b.points.len(), b.points.first().map_or(0, Vec::len));
+    let total = |k: &[(f64, usize)]| k.iter().map(|(_, m)| m).sum::<usize>();
+    if b.u_degree == 0
+        || b.v_degree == 0
+        || nu.checked_mul(nv).is_none_or(|n| n > MAX_POLES || n == 0)
+        || total(&uk) + 1 != nu + b.u_degree
+        || total(&vk) + 1 != nv + b.v_degree
+        || b.points.iter().any(|r| r.len() != nv || r.iter().flatten().any(|x| !x.is_finite()))
+    {
+        return Err(bad());
+    }
+    if let Some(w) = &b.weights
+        && (w.len() != nu || w.iter().any(|r| r.len() != nv || r.iter().any(|x| !(x.is_finite() && *x > 0.0))))
+    {
+        return Err(bad());
+    }
+    let (pu, pv) = (periodic(b, true), periodic(b, false));
+    let mut t = vec![
+        Tok::Open,
+        Tok::Name("exactsur", "exact_spl_sur"),
+        full(),
+        Tok::Word(if b.weights.is_some() { "nurbs" } else { "nubs" }),
+        degree_tok(b.u_degree),
+        degree_tok(b.v_degree),
+        if pu { PERIODIC } else { OPEN },
+        if pv { PERIODIC } else { OPEN },
+        Tok::Enum("none", 0),
+        Tok::Enum("none", 0),
+        count_tok(uk.len()),
+        count_tok(vk.len()),
+        Tok::Line,
+    ];
+    knot_tokens(&mut t, &uk);
+    knot_tokens(&mut t, &vk);
+    for j in 0..nv {
+        for (i, row) in b.points.iter().enumerate() {
+            if let Some(p) = row.get(j) {
+                t.extend(p.iter().map(|x| Tok::Real(*x)));
+            }
+            if let Some(w) = b.weights.as_ref().and_then(|w| w.get(i)).and_then(|r| r.get(j)) {
+                t.push(Tok::Real(*w));
+            }
+            t.push(Tok::Line);
+        }
+    }
+    t.extend([Tok::Real(0.0), Tok::Line]);
+    discontinuity_tokens(&mut t, &uk, b.u_degree, pu);
+    discontinuity_tokens(&mut t, &vk, b.v_degree, pv);
+    // SAT 400 closes with four range ends, AutoCAD's data store with one false.
+    t.extend([
+        Tok::Sat(vec![Tok::Bound(Some(1.0)), Tok::Bound(Some(0.0)), Tok::Bound(Some(1.0)), Tok::Bound(Some(0.0))]),
+        Tok::Sab(vec![Tok::Bound(None)]),
+        Tok::Close,
+    ]);
+    Ok(Record {
+        name: "spline-surface",
+        fields: vec![Field::Sense(false), Field::Sub(t), Field::Infinite, Field::Infinite, Field::Infinite, Field::Infinite],
+    })
+}
+
+/// A pcurve as STEP gives it: a 2D B-spline on the STEP edge's parameter, `[a, b]` its knot range,
+/// running along the edge's curve.
+#[derive(Clone, Debug)]
+struct Bs2 {
+    degree: usize,
+    /// The full knot vector.
+    knots: Vec<f64>,
+    poles: Vec<[f64; 2]>,
+    weights: Option<Vec<f64>>,
+}
+
+impl Bs2 {
+    /// From a STEP PCURVE's 2D B-spline; `None` for any other 2D curve or one that doesn't hold.
+    fn of(c: &Curve) -> Option<Bs2> {
+        let Curve::BSpline(b) = c else { return None };
+        let mut knots = Vec::new();
+        for (k, m) in b.knots.iter().zip(&b.multiplicities) {
+            if knots.len().checked_add(*m)? > MAX_POLES || !k.is_finite() {
+                return None;
+            }
+            knots.extend(std::iter::repeat_n(*k, *m));
+        }
+        let poles: Vec<[f64; 2]> = b.points.iter().map(|p| [p[0], p[1]]).collect();
+        let fine = b.degree > 0
+            && knots.len() == poles.len() + b.degree + 1
+            && knots.windows(2).all(|w| matches!(w, [a, b] if a <= b))
+            && poles.iter().flatten().all(|x| x.is_finite())
+            && b.weights.as_ref().is_none_or(|w| w.len() == poles.len() && w.iter().all(|x| x.is_finite() && *x > 0.0));
+        fine.then(|| Bs2 { degree: b.degree, knots, poles, weights: b.weights.clone() })
+    }
+
+    /// Its parameter range: the knots past the first `degree` and before the last.
+    fn range(&self) -> Option<[f64; 2]> {
+        let a = *self.knots.get(self.degree)?;
+        let b = *self.knots.get(self.knots.len().checked_sub(self.degree + 1)?)?;
+        (a < b).then_some([a, b])
+    }
+
+    /// Where it starts and ends in (u, v), along the edge (its end poles: the knots clamped).
+    fn ends(&self) -> Option<([f64; 2], [f64; 2])> {
+        Some((*self.poles.first()?, *self.poles.last()?))
+    }
+
+    /// As an `exppc` on the ACIS parameter: `[a, b]` mapped linearly onto `[t0, t1]`, and turned
+    /// round (parameter negated) for a coedge running against its edge, on the face's surface,
+    /// the `surface`-th subtype written.
+    fn record(&self, [t0, t1]: [f64; 2], reversed: bool, surface: usize) -> Option<Record> {
+        let [a, b] = self.range()?;
+        let k = (t1 - t0) / (b - a);
+        if !(k.is_finite() && k > 0.0) {
+            return None;
+        }
+        let mut knots: Vec<f64> = self.knots.iter().map(|s| t0 + (s - a) * k).collect();
+        let mut poles = self.poles.clone();
+        let mut weights = self.weights.clone();
+        if reversed {
+            knots = knots.iter().rev().map(|s| -s).collect();
+            poles.reverse();
+            if let Some(w) = weights.as_mut() {
+                w.reverse();
+            }
+        }
+        // ACIS's knots: without the first and last.
+        let mut distinct: Vec<(f64, usize)> = Vec::new();
+        for s in knots.iter().skip(1).take(knots.len().saturating_sub(2)) {
+            match distinct.last_mut() {
+                Some((v, m)) if *v == *s => *m += 1,
+                _ => distinct.push((*s, 1)),
+            }
+        }
+        let mut t = vec![
+            Tok::Open,
+            Tok::Name("exppc", "exp_par_cur"),
+            Tok::Word(if weights.is_some() { "nurbs" } else { "nubs" }),
+            degree_tok(self.degree),
+            OPEN,
+            count_tok(distinct.len()),
+            Tok::Line,
+        ];
+        knot_tokens(&mut t, &distinct);
+        for (i, p) in poles.iter().enumerate() {
+            t.extend([Tok::Real(p[0]), Tok::Real(p[1])]);
+            if let Some(w) = weights.as_ref().and_then(|w| w.get(i)) {
+                t.push(Tok::Real(*w));
+            }
+            t.push(Tok::Line);
+        }
+        t.extend([
+            Tok::Real(0.0),
+            Tok::Line,
+            Tok::Word("spline"),
+            Tok::Sense(false),
+            Tok::Open,
+            Tok::Name("ref", "ref"),
+            count_tok(surface),
+            Tok::Close,
+            Tok::Bound(None),
+            Tok::Bound(None),
+            Tok::Bound(None),
+            Tok::Bound(None),
+            Tok::Line,
+            Tok::Close,
+        ]);
+        Some(Record { name: "pcurve", fields: vec![Field::Int(0), Field::Sense(false), Field::Sub(t), Field::Real(0.0), Field::Real(0.0)] })
+    }
+}
+
+fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
+}
+
+/// One use of an edge in a loop: the edge (into the edge table), whether the loop runs against
+/// it, and its pcurve (into the pcurve table) on a spline face.
 #[derive(Clone, Copy, Debug)]
 struct Use {
     edge: usize,
     reversed: bool,
+    pcurve: Option<usize>,
 }
 
 struct AEdge {
@@ -225,12 +590,16 @@ struct AEdge {
     end: usize,
     /// `None` for a point edge: a cone's apex.
     curve: Option<ACurve>,
+    /// The PCURVEs STEP gives the edge on spline faces: their surface and curve.
+    pcurves: Vec<(Surface, Bs2)>,
 }
 
 struct AFace {
     surface: Record,
     reversed: bool,
     loops: Vec<Vec<Use>>,
+    /// On a spline surface: its coedges carry pcurves referring to it.
+    spline: bool,
 }
 
 /// The body's B-rep read from the STEP entities, in ACIS terms.
@@ -242,6 +611,7 @@ struct Model {
     edge_of: HashMap<u64, usize>,
     points: Vec<P3>,
     vertex_of: HashMap<u64, usize>,
+    pcurves: Vec<Bs2>,
 }
 
 fn refs(p: Option<&Param>) -> Vec<u64> {
@@ -278,11 +648,22 @@ impl Model {
             _ => return Err(err("an edge without its vertices or curve")),
         };
         let (start, end) = (self.vertex(ex, r, a)?, self.vertex(ex, r, b)?);
-        let c = r.curve(geometry).map_err(err)?;
-        let c = curve(&c)?;
+        let step_curve = r.curve(geometry).map_err(err)?;
+        let c = curve(&step_curve)?;
+        let mut pcurves = Vec::new();
+        if let Curve::SurfaceCurve { associated, .. } = &*step_curve {
+            for a in associated {
+                if let Associated::Pcurve(p) = a
+                    && matches!(*p.surface, Surface::BSpline(_))
+                    && let Some(c2) = Bs2::of(&p.curve)
+                {
+                    pcurves.push(((*p.surface).clone(), c2));
+                }
+            }
+        }
         // The ACIS edge runs as its curve does: from the STEP edge's start when the senses agree.
         let (start, end) = if same_sense { (start, end) } else { (end, start) };
-        self.edges.push(AEdge { start, end, curve: Some(c) });
+        self.edges.push(AEdge { start, end, curve: Some(c), pcurves });
         let i = self.edges.len() - 1;
         self.edge_of.insert(id, i);
         Ok((i, !same_sense))
@@ -291,8 +672,46 @@ impl Model {
     /// The loop at a cone's apex: one use of a point edge (no curve, starting and ending at the
     /// apex vertex), the way AutoCAD writes it.
     fn apex_loop(&mut self, v: usize) -> Vec<Use> {
-        self.edges.push(AEdge { start: v, end: v, curve: None });
-        vec![Use { edge: self.edges.len() - 1, reversed: true }]
+        self.edges.push(AEdge { start: v, end: v, curve: None, pcurves: Vec::new() });
+        vec![Use { edge: self.edges.len() - 1, reversed: true, pcurve: None }]
+    }
+
+    /// Each use of a loop on the spline surface `s` given its pcurve: the edge's one on `s`, or,
+    /// for a seam's two, the one that runs on from the use before it and into the one after.
+    fn give_pcurves(&mut self, s: &Surface, uses: &mut [Use]) {
+        let candidates: Vec<Vec<&Bs2>> = uses
+            .iter()
+            .map(|u| self.edges.get(u.edge).map(|e| e.pcurves.iter().filter(|(on, _)| on == s).map(|(_, c)| c).collect()).unwrap_or_default())
+            .collect();
+        // Where a use starts and ends in (u, v), running its way.
+        let directed = |c: &Bs2, u: &Use| c.ends().map(|(a, b)| if u.reversed { (b, a) } else { (a, b) });
+        let n = uses.len();
+        let mut chosen: Vec<Option<&Bs2>> = candidates.iter().map(|c| if c.len() == 1 { c.first().copied() } else { None }).collect();
+        for i in 0..n {
+            let (Some(cands), Some(u)) = (candidates.get(i), uses.get(i)) else { continue };
+            if cands.len() < 2 {
+                continue;
+            }
+            let neighbour = |k: usize| -> Option<([f64; 2], [f64; 2])> {
+                let c = chosen.get(k).copied().flatten().or_else(|| candidates.get(k).and_then(|c| c.first().copied()))?;
+                directed(c, uses.get(k)?)
+            };
+            let before = neighbour((i + n - 1) % n).map(|(_, e)| e);
+            let after = neighbour((i + 1) % n).map(|(s, _)| s);
+            let misfit =
+                |c: &Bs2| directed(c, u).map_or(f64::INFINITY, |(s, e)| before.map_or(0.0, |b| dist2(b, s)) + after.map_or(0.0, |a| dist2(e, a)));
+            let best = cands.iter().copied().min_by(|a, b| misfit(a).total_cmp(&misfit(b)));
+            if let Some(slot) = chosen.get_mut(i) {
+                *slot = best;
+            }
+        }
+        let picked: Vec<Option<Bs2>> = chosen.into_iter().map(|c| c.cloned()).collect();
+        for (u, c) in uses.iter_mut().zip(picked) {
+            if let Some(c) = c {
+                self.pcurves.push(c);
+                u.pcurve = Some(self.pcurves.len() - 1);
+            }
+        }
     }
 
     /// The vertices of `all`'s edges that no edge of `kept` reaches: where only seams went (a
@@ -324,9 +743,10 @@ impl Model {
         let p = e.params();
         let surface_id = p.get(2).and_then(Param::as_ref_id).ok_or_else(|| err("a face without a surface"))?;
         let same_sense = p.get(3).and_then(Param::as_bool).unwrap_or(true);
-        let s = r.surface(surface_id).map_err(err)?;
-        let is_cone = matches!(*s, Surface::Cone { .. });
-        let s = surface(&s)?;
+        let step_surface = r.surface(surface_id).map_err(err)?;
+        let is_cone = matches!(*step_surface, Surface::Cone { .. });
+        let spline = matches!(*step_surface, Surface::BSpline(_));
+        let s = surface(&step_surface)?;
         let mut loops = Vec::new();
         for bound in refs(p.get(1)) {
             let b = entity(ex, bound)?;
@@ -351,7 +771,7 @@ impl Model {
                 let edge = o.params().get(3).and_then(Param::as_ref_id).ok_or_else(|| err("an oriented edge without its edge"))?;
                 let forward = o.params().get(4).and_then(Param::as_bool).unwrap_or(true);
                 let (edge, against) = self.edge(ex, r, edge)?;
-                uses.push(Use { edge, reversed: !forward ^ against });
+                uses.push(Use { edge, reversed: !forward ^ against, pcurve: None });
             }
             if !(orientation ^ flip) {
                 uses.reverse();
@@ -359,16 +779,20 @@ impl Model {
                     u.reversed = !u.reversed;
                 }
             }
+            if spline {
+                self.give_pcurves(&step_surface, &mut uses);
+            }
             loops.push(uses);
         }
-        let mut kept = self.without_seams(loops.clone());
+        // A spline face keeps its seam, as AutoCAD's sweep does.
+        let mut kept = if spline { loops.clone() } else { self.without_seams(loops.clone()) };
         if is_cone {
             for v in self.left_by_seams(&loops, &kept) {
                 let apex = self.apex_loop(v);
                 kept.push(apex);
             }
         }
-        Ok(AFace { surface: s, reversed: !(same_sense ^ flip), loops: kept })
+        Ok(AFace { surface: s, reversed: !(same_sense ^ flip), loops: kept, spline })
     }
 
     /// Where a use starts and ends.
@@ -449,8 +873,31 @@ fn records(ex: &Exchange) -> Result<Vec<Record>> {
     layout(&m)
 }
 
+/// An edge's ACIS parameters at its start and end: a periodic curve's end past its start, by up
+/// to a turn; a spline's its pcurves' range (the STEP edge's), else its own ends'. A point edge
+/// has the empty range AutoCAD gives it: from 1 to 0.
+fn edge_range(m: &Model, edge: &AEdge) -> Result<[f64; 2]> {
+    let (ps, pe) = (m.points.get(edge.start), m.points.get(edge.end));
+    let (Some(ps), Some(pe)) = (ps, pe) else { return Err(err("an edge without its points")) };
+    let given = edge.pcurves.first().and_then(|(_, c)| c.range());
+    let (t0, mut t1) = match (&edge.curve, given) {
+        (Some(ACurve::Spline(_)), Some([a, b])) => (a, b),
+        (Some(c), _) => (c.param(*ps), c.param(*pe)),
+        (None, _) => (1.0, 0.0),
+    };
+    if edge.curve.as_ref().is_some_and(ACurve::periodic) {
+        while t1 <= t0 + 1e-12 {
+            t1 += TAU;
+        }
+        while t1 > t0 + TAU + 1e-12 {
+            t1 -= TAU;
+        }
+    }
+    Ok([t0, t1])
+}
+
 /// The model's records in file order: the body, lumps, shells, faces, loops, coedges, edges,
-/// vertices, points, surfaces and curves.
+/// vertices, points, surfaces, curves and pcurves.
 fn layout(m: &Model) -> Result<Vec<Record>> {
     let faces: Vec<&AFace> = m.lumps.iter().flatten().flatten().collect();
     let lumps = m.lumps.len();
@@ -501,6 +948,21 @@ fn layout(m: &Model) -> Result<Vec<Record>> {
             base_curve + curves - 1
         }));
     }
+    let base_pcurve = base_curve + curves;
+    let mut ranges: Vec<[f64; 2]> = Vec::with_capacity(used_edges.len());
+    for &e in &used_edges {
+        ranges.push(edge_range(m, m.edges.get(e).ok_or_else(|| err("an edge out of range"))?)?);
+    }
+    // Each spline face's surface is the subtype it is in file order: the surfaces come before
+    // every other subtype.
+    let mut subtype_of: Vec<Option<usize>> = Vec::with_capacity(faces.len());
+    let mut splines = 0usize;
+    for f in &faces {
+        subtype_of.push(f.spline.then(|| {
+            splines += 1;
+            splines - 1
+        }));
+    }
 
     // Coedges: their loop, place and use, and each edge's uses in order.
     struct Co {
@@ -533,6 +995,22 @@ fn layout(m: &Model) -> Result<Vec<Record>> {
         {
             list.push(ci);
         }
+    }
+    // The pcurve records of the coedges on spline faces, in coedge order.
+    let mut pcurve_records: Vec<Record> = Vec::new();
+    let mut pcurve_of: Vec<Option<usize>> = Vec::with_capacity(cos.len());
+    for c in &cos {
+        let face = loop_face.get(c.loop_index).copied().unwrap_or(0);
+        let record = (|| {
+            let surface = subtype_of.get(face).copied().flatten()?;
+            let pc = m.pcurves.get(c.u.pcurve?)?;
+            let range = ranges.get(edge_index.get(c.u.edge).copied().flatten()?).copied()?;
+            pc.record(range, c.u.reversed, surface)
+        })();
+        pcurve_of.push(record.map(|r| {
+            pcurve_records.push(r);
+            base_pcurve + pcurve_records.len() - 1
+        }));
     }
 
     let mut out: Vec<Record> = Vec::new();
@@ -604,27 +1082,13 @@ fn layout(m: &Model) -> Result<Vec<Record>> {
                 Field::Ref(Some(base_edge + e)),
                 Field::Sense(c.u.reversed),
                 Field::Ref(Some(base_loop + c.loop_index)),
-                Field::Ref(None),
+                Field::Ref(pcurve_of.get(ci).copied().flatten()),
             ],
         });
     }
     for (k, &e) in used_edges.iter().enumerate() {
         let edge = m.edges.get(e).ok_or_else(|| err("an edge out of range"))?;
-        let (ps, pe) = (m.points.get(edge.start), m.points.get(edge.end));
-        let (Some(ps), Some(pe)) = (ps, pe) else { return Err(err("an edge without its points")) };
-        // A point edge has the empty range AutoCAD gives it: from 1 to 0.
-        let (t0, mut t1) = match &edge.curve {
-            Some(c) => (c.param(*ps), c.param(*pe)),
-            None => (1.0, 0.0),
-        };
-        if edge.curve.as_ref().is_some_and(ACurve::periodic) {
-            while t1 <= t0 + 1e-12 {
-                t1 += TAU;
-            }
-            while t1 > t0 + TAU + 1e-12 {
-                t1 -= TAU;
-            }
-        }
+        let [t0, t1] = ranges.get(k).copied().ok_or_else(|| err("an edge without its range"))?;
         let v = |p: usize| vertex_index.get(p).copied().flatten().map(|i| base_vertex + i);
         let first_use = uses_of.get(k).and_then(|u| u.first()).map(|c| base_coedge + c);
         out.push(Record {
@@ -656,6 +1120,7 @@ fn layout(m: &Model) -> Result<Vec<Record>> {
             out.push(c.record());
         }
     }
+    out.extend(pcurve_records);
     Ok(out)
 }
 
