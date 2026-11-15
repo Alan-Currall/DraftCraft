@@ -16,6 +16,7 @@ How to write it (see AGENTS.md):
 - The workspace menus show 3D Modeling greyed out, with a note that 3D solids are not available in this build yet.
 
 ### Fixed
+- AutoCAD no longer reports an unknown header variable $CTABLESTYLE when it opens a DXF file saved by DraftCraft: the current table style is saved where AutoCAD keeps it.
 - MASSPROP gives a region's exact centroid and moments of inertia when it has arcs, the same as AutoCAD (they were measured on a fine polygon before).
 
 ## 3.0.0
