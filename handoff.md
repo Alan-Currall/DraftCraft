@@ -1,192 +1,380 @@
-# Handoff: 3D solids in DraftCraft, what's still missing compared with AutoCAD
+# Handoff: finishing 3D in DraftCraft, everything still missing compared with AutoCAD
 
-Written 2026-11-15. Branch `feat/solids-3d`, PR https://github.com/SkryxDev/DraftCraft/pull/20 (open, not to be merged without the owner's go-ahead). Everything is behind the cargo feature `solids`. The kernel is solidcore (`tangency-labs/solidcore` @ `ce5c6e9`), ACIS reading goes through `cadmpeg-asm` 0.6.12. Technical detail is in `docs/solids.md`, which must be kept up to date.
+Rewritten 2026-11-15 for the agent that takes the work over. This file is the to-do list: everything that
+DraftCraft's 3D still lacks compared with AutoCAD's 3D Modeling workspace, checked against the code at the
+tip of `feat/solids-3d` (commit `afccf044` and this file). The goal set by the owner is that DraftCraft's 3D works
+**like AutoCAD's and is perfectly compatible with AutoCAD**: what AutoCAD saves opens here as the same
+objects, and what DraftCraft saves opens in AutoCAD as AutoCAD's own objects.
 
----
-
-## 0. Where we are
-
-**Done:**
-- Primitives: BOX, WEDGE, CYLINDER, CONE, SPHERE, TORUS.
-- EXTRUDE and REVOLVE.
-- UNION, SUBTRACT, INTERSECT.
-- SLICE, FILLETEDGE, CHAMFEREDGE, SOLIDEDIT shell.
-- INTERFERE, MASSPROP, FLATSHOT, SECTION.
-- 3D view: VPOINT, 3DORBIT, PLAN, VSCURRENT (wireframe, hidden, shaded).
-- *3D Modeling* ribbon tab.
-- **ACIS translator:**
-  - AutoCAD 3DSOLIDs (SAT and SAB) open as editable solids. Tested against drawings made in AutoCAD 2027: volume and centroid match MASSPROP to four decimals.
-  - DraftCraft solids save as real 3DSOLIDs, NURBS faces included: SAT 400 for 2000–2010, SAB 700 in the ACDSDATA data store for 2013+.
-  - Code: `crates/solid/src/acis/` (`read.rs`, `write.rs`, `model.rs`) and `crates/io/src/solid_acis.rs`.
-  - Test drawings: `crates/io/tests/data/acad-solids/`.
-
-**AutoCAD check of the files DraftCraft writes** (full notes in `side-session-notes/…/dc-acis/autocad-check.md`). AutoCAD 2027 showed three problems; the fixes are in commit `c3629868`:
-1. **Fixed:** the 3DSOLID in DXF was missing the `100 AcDbEntity` group, so AutoCAD discarded the whole DXF. A test copy with the group added opens with 0 AUDIT errors.
-2. **Fixed:** the cone's face was missing the apex loop (one point edge with no curve), so AutoCAD called it an invalid solid with volume 0. The fix is not yet re-checked in AutoCAD.
-3. **Fixed, not yet checked in AutoCAD:** AutoCAD rejected the SAT text in DWG 2000/2010 (`Error Code Number is 75003`, `eCannotRestoreFromAcisFile`, solids discarded), though the same text opens from DXF. Ending lines with LF alone didn't fix it. Comparing with AutoCAD's own DWG 2000, the only real difference is the SAT version: AutoCAD writes 400, we wrote 700. The container is the same, apart from AutoCAD writing a reference point and isolines in the wireframe block. SAT is now written as save format 400, in DXF too. The changes are no history fields after an entity's attribute, no parameters or convexity on an edge, and a header that counts the records. Test: `sat_text_looks_like_acis_400`, and a check in `solids_save_as_autocad_3dsolids_in_every_version`.
-   - **Check files** in `side-session-notes/…/dc-acis/round3/`:
-     - `x-acad400-*.dwg` and `x-acad21500-2010.dwg`: AutoCAD's own SAT through our DWG writer. They tell whether the container is right.
-     - `x-dc700-2004/2007.dwg`: the old 700 SAT.
-     - `sat400-*`: the new output.
-   - **If the 400 files are still refused:** the container is the suspect. Write the reference point (the body's translation), isolines 4 and the wires flag as AutoCAD does.
-
-DWG 2013 and 2018 open cleanly with 0 AUDIT errors, and 7 of the 8 solids match MASSPROP exactly (the 8th is the cone, fixed in 2).
-
-Still to do: re-check every version in AutoCAD with the current files (the README of expected values is in `dc-acis/README.md`), then update the "Checked against AutoCAD" line in `docs/solids.md`.
-
-Side note: every DXF draws the warning "unknown header variable `$CTABLESTYLE`". It's harmless, but it should be fixed.
+- **Branch:** `feat/solids-3d`. **PR:** https://github.com/SkryxDev/DraftCraft/pull/20. Commit and push to
+  this branch; never to `main`, and never merge the PR (the owner merges).
+- **Feature:** everything 3D is behind the cargo feature `solids`. Without it, the build, the tests and the
+  wasm build must stay exactly as they are.
+- **Read first:** `AGENTS.md` (the rules; they outrank this file), then `docs/solids.md` (how the 3D code
+  works; keep it current as you go), then this file.
 
 ---
 
-## 1. File compatibility (top priority)
+## 1. What already works (don't redo it)
 
-### 1.1 Free-form (NURBS) solids, reading — done, not yet checked in AutoCAD
-- AutoCAD's LOFT and SWEEP-along-HELIX solids open as solids from DXF 2000 (SAT 400), DXF 2010 (ASM text 21500) and DWG 2018 (SAB in the data store), volume and centroid as MASSPROP. Test: `autocad_free_form_solids_read`.
-- How (`crates/solid/src/acis/read.rs`):
-  - **ACIS pcurves.** `impl Trims for Kernel` hands the kernel ACIS's own pcurves on spline faces (`Kernel::given`). The data's face is matched to the kernel's `TrimFace` by each use's edge ends and direction, trying the loop both ways.
-    - A reversed coedge's pcurve is turned round (`pcurve`).
-    - `uv_offset` is applied.
-    - Periodic pcurves (clamped knots) are accepted.
-  - **Parameter mapping.** Where the kernel's edge parameter differs from ACIS's (record circles in quarter turns, lines on [0, 1]), the pcurve is resampled onto it (`remapped`: a Hermite cubic through 32 spans). The ACIS parameter of each point comes from the edge's own curve (`AcisParam`) and its range (`EdgeParam`).
-  - **Helix edges.** A procedural helix becomes a cubic spline of 64 Bézier spans per turn (`helix_spline`), at most 2^16 spans.
-  - **ACIS 4 short names.** cadmpeg matches a coedge's pcurve only as `exp_par_cur`; SAT 400 writes `exppc`. `long_names` renames it in the parsed records before decoding.
-  - **Edges without parameters.** SAT 400 keeps no parameter range on an edge: a circle edge's range comes from its ends' angles (`edge_param_of`).
-  - **What cadmpeg only reads word by word** (`read/legacy.rs`, filled into the decoded B-rep):
-    - SAT 400's `parcur` (AutoCAD 2000's SWEEP rail): its B-spline cache becomes the edge's curve, and the two pcurves that point into it (`pcurve $-1 ±1 $curve du dv`) its coedges' pcurves;
-    - ASM text's procedural surfaces (`loft_spl_sur`, `sweep_sur` in DXF 2004–2010): the `full nubs …` cache at the subtype's own depth, `{ ref k }` resolved to the k-th subtype written;
-    - ASM text's `helix_int_cur`: the same 64-spans-per-turn spline as the binary form.
-  - **Closed circle edges.** The circle's reference passes through the vertex, nudged a few roundings until solidcore's STEP reader puts the vertex exactly at angle 0 (`closed_circle_placement`). Otherwise the kernel starts the turn a whole turn later and refuses the form.
-- **Still open:**
-  - a helix with `apex_factor ≠ 0` (a conical helix) is refused;
-  - a pcurve with `wrapper_reversed` is refused;
-  - other procedural curves (offset, intersection) have no definition yet.
+Verified in the code and, where it says so, in AutoCAD 2027.
 
-### 1.2 Free-form (NURBS) solids, writing — done, not yet checked in AutoCAD
-- `crates/solid/src/acis/write.rs` writes B-spline faces and edges:
-  - `spline-surface { exactsur nubs|nurbs … }`, the poles with u running fastest, the three discontinuity lists per direction, a periodic direction's seam knot first (`spline_surface`, `periodic`);
-  - `intcurve-curve { exactcur … }` for a B-spline edge (`exact_curve`);
-  - a `pcurve { exppc … spline forward { ref k } … }` on every coedge of a spline face, on the coedge's parameter (a reversed coedge's knots negated), `ref k` counting the subtypes written (`Bs2::record`, `layout`). A face on a spline surface keeps its seams.
-- **SAT** (DWG/DXF 2000–2010) is laid out as AutoCAD 2000 writes its own LOFT and SWEEP (`acad-ref/solids-free-2000.dxf`).
-- **SAB** (2013+) stays save format 700, as the analytic solids AutoCAD already opened. The subtypes are named in full (`exact_spl_sur`, `exact_int_cur`, `exp_par_cur`), with the later formats' fields (`Tok::Sab`): the cache form `full` before the spline; after a surface's discontinuity lists one false (as AutoCAD 2018's data store ends a spline surface's cache) instead of SAT 400's `F 1 F 0 F 1 F 0`; after a curve's lists no extension and two unbounded ends. **This tail is the least certain part:** if AutoCAD refuses a NURBS solid from DWG 2013/2018 while it opens from DWG 2010, look here first.
-- Test: `autocad_free_form_solids_write_back` (AutoCAD's loft and sweep written as SAT and SAB and read again, the same volume).
-- **To check in AutoCAD:** save `solids-free-2018.dwg` from DraftCraft as DWG/DXF 2000, 2010, 2013, 2018; open each; MASSPROP against `acad-ref/mp-free-*.mpr`; AUDIT.
+**Kernel and document**
+- `crates/solid` (`draftcraft-solid`, L0) is the only crate that names the kernel (solidcore, pinned to
+  `tangency-labs/solidcore` `ce5c6e9`) and the ACIS record reader (`cadmpeg-asm` 0.6.12).
+  `cargo xtask layers` enforces this.
+- `EntityKind::Solid3d` (`crates/doc/src/entity/solid3d.rs`): the exact body (solidcore `.smb`), a
+  placement matrix, a display look, face/edge counts, volume, and `body_entity` (saved back as BODY).
+  MOVE, ROTATE, SCALE and MIRROR change only the placement.
 
-### 1.3 Other 3D entities from AutoCAD
-- **REGION** and **BODY**: done in code (`crates/solid/src/acis/region.rs`, `crates/io/src/solid_acis.rs`).
-  - A REGION's ACIS data (a sheet body: flat faces, `double out`, one coedge per edge) is read into a DraftCraft `Region` when its faces lie on the XY plane and its edges are lines and arcs (a whole circle becomes two half turns); the loops are renested. Otherwise it stays as saved, with a read note ("1 region is kept as AutoCAD saved it …").
-  - A `Region` is saved as a REGION: SAT 400 (2000–2010) or SAB 700 in the data store (2013+), one lump per outer loop with its holes, a plane face on z = 0 with normal +Z, outer loops counter-clockwise and holes clockwise, lines as `straight-curve`, arcs as `ellipse-curve` (ratio 1). If the writer refuses it (no area), it keeps the polyline form.
-  - A BODY whose data reads as a solid opens as a `Solid3d` with `body_entity: true` and is saved as a BODY again (no `AcDb3dSolid` subclass). A BODY that is a sheet or a wire stays as saved. The interim form doesn't record `body_entity`.
-  - Tests: `regions_round_trip_through_acis`, `hostile_regions_never_crash` (solid crate); `regions_save_as_autocad_regions_in_every_version`, `a_body_is_saved_as_a_body_again`, `hostile_region_groups_are_kept_and_never_crash` (io).
-  - **Checked in AutoCAD 2027 (2026-11-15):** AutoCAD's own REGION samples (`acad-solids/regions-*`, MASSPROP in `README-regions.md`) open with the same area, perimeter and centroid; DraftCraft's regions in DXF/DWG 2000–2018 open in AutoCAD as REGIONs, same MASSPROP, AUDIT 0 errors, EXTRUDE works. A BODY written by DraftCraft is not checked in AutoCAD yet (AutoCAD has no command that makes a BODY to compare with).
-- **Surfaces:** PLANESURF, NURBSURF, EXTRUDEDSURFACE, LOFTEDSURFACE, SWEPTSURFACE, REVOLVEDSURFACE. These need a "surface" entity in the document.
-- **MESH** (subdivision mesh, `MESH` entity): read, draw and write it.
-- **A 3DSOLID with several separate lumps:** today it is refused and kept as saved ("several separate solids"). Read it as one solid with several lumps, if solidcore allows it, or split it.
-- **Mirrored ACIS transforms** (det < 0): refused today. Handle them by reversing face senses.
+**Commands** (`crates/engine/src/cmd/solids/*`, all `CommandSpec`s with JSON form, interactive prompts and tests)
+- BOX, WEDGE, CYLINDER, CONE, SPHERE, TORUS (`prims.rs`).
+- EXTRUDE (with taper), REVOLVE (`sweep.rs`; despite the file name there is no SWEEP command).
+- UNION, SUBTRACT, INTERSECT (the region commands, using the kernel when solids are selected).
+- SLICE, FILLETEDGE, CHAMFEREDGE, SOLIDEDIT (**Shell only**), INTERFERE (`edit.rs`).
+- MASSPROP for solids and regions (exact for regions with arcs).
+- FLATSHOT, SECTION (`views.rs`).
+- VPOINT (+ `vpoint.top` … `vpoint.nwiso`), 3DORBIT, PLAN, VSCURRENT (+ `vscurrent.*`) (`look.rs`).
+- Multi-object commands are all-or-nothing (`Session::all_or_nothing`).
 
-### 1.4 What gets lost on a round trip
-- **Solid history** (`ACSH_*` objects, `AcDbShHistory`, SOLIDHIST): in AutoCAD you select a BOX and change its dimensions from Properties. We drop the history (`350 0`). Either keep it as foreign data linked to the solid, or rebuild it (at least for the primitives).
-- **Face colours and materials:** ACIS attributes (`persubent-acadSolidHistory-attrib`, colour attributes) and MATERIAL objects aren't carried into DraftCraft's body.
-- **DWG 2004–2010 with SAB data** (modeler format 2): `crates/io/src/dwg/entities.rs::modeler()` returns `None` (not read). Read it: SAB right after the header, up to the end marker.
+**3D view** (`crates/engine/src/view3d.rs`, `crates/ui-egui/src/canvas/view3d.rs`, `view3d_overlay.rs`)
+- Orthographic only, painted on the CPU with egui's painter, one view per drawing (model space only).
+- Nine visual styles: 2D Wireframe, Wireframe, Hidden, Realistic, Conceptual, Shaded, Shaded with Edges,
+  Shades of Gray, X-Ray.
+- ViewCube (26 spots, drag to orbit, compass, Home, right-click menu), navigation bar (zoom extents/in/out,
+  orbit), viewport controls `[-][view][style]`.
+- Picking: a click picks the front-most solid; edge/face picks for FILLETEDGE, CHAMFEREDGE and Shell go
+  along the line of sight; a point prompt gives the point on the XY plane.
 
-### 1.5 Exchange with other programs
-- IMPORT and EXPORT for STEP, through `solidcore-step`, which already reads and writes. Also IGES.
-- STLOUT and 3DPRINT (from the display mesh).
-- 3DDWF can wait.
+**Interface**
+- *3D Modeling* workspace and ribbon (`SOLID_TABS` in `crates/ui-egui/src/ribbon.rs`): Home, Solid,
+  Visualize tabs, icons drawn in `icons.rs`, Italian and Chinese labels. Workspace switch in the QAT,
+  status bar and WSCURRENT.
+
+**Files (ACIS translator, `crates/solid/src/acis/*`, `crates/io/src/solid_acis.rs`)**
+- AutoCAD's 3DSOLIDs open as editable solids from DXF 2000/2010/2018 and DWG 2000/2013/2018: SAT 400, ASM
+  text 21500, SAB in the 2013+ data store. Volume and centroid match AutoCAD's MASSPROP to four decimals
+  (tests in `crates/io/src/solid_acis/tests.rs`, drawings in `crates/io/tests/data/acad-solids/`).
+- AutoCAD's LOFT and SWEEP (also along a helix) open as solids (NURBS faces, ACIS pcurves, procedural
+  surfaces read from their caches).
+- DraftCraft's solids save as real 3DSOLIDs: SAT 400 for 2000–2010, SAB 700 in ACDSDATA for 2013+.
+  **Checked in AutoCAD 2027** for analytic solids (box, cylinder, cone, sphere, torus, frustum, box with a
+  hole, rotated box) in DWG and DXF 2000, 2010, 2013 and 2018: AUDIT clean, SOLIDEDIT Check valid,
+  MASSPROP equal.
+- REGION opens as a DraftCraft region and saves as an AutoCAD REGION in every version. **Checked in
+  AutoCAD 2027** both ways (MASSPROP, AUDIT, EXTRUDE).
+- BODY holding a solid opens as a solid and saves as a BODY again.
+- Solids the ACIS writer can't describe are saved in the *interim form* (a polyface mesh plus the exact body
+  in an XRECORD, `crates/io/src/solid_file.rs`), which DraftCraft reopens as the solid.
+- DXF no longer writes `$CTABLESTYLE` in the header; AutoCAD's variables dictionary is written and read.
 
 ---
 
-## 2. Missing modelling commands
+## 2. How to work
 
-Each one is a `CommandSpec` in `crates/engine/src/cmd/solids/*`, with tests, a ribbon place on the panel where AutoCAD on Windows puts it, an icon drawn in `icons.rs`, Italian strings in `it.tsv` and the menu entry in `zh.tsv`.
+### Build, run, test
+- Run: `cargo run --release -p draftcraft --features solids -- --sample --control PORT` (AGENTS.md explains
+  the control channel and `ui.screenshot`; for UI work always look at a screenshot).
+- **Gates before every commit:** `cargo xtask ci` **and** `cargo xtask ci --solids`. Also
+  `cargo check --target wasm32-unknown-unknown -p draftcraft-solid --features kernel`.
+- Three tests fail only on macOS and are accepted there: `read_file_refuses_a_name_that_is_not_unicode`,
+  `usage::non_unicode_output_names`, `thai_marks_stack_in_an_installed_font`.
+  `mcp_connect::connect_to_closed_port_fails` can fail when the port it picks happens to be in use; it
+  passes alone.
+- Four AutoCAD test DXFs (`acad-solids/solids-basic-2000/2010/2018.dxf`, `solids-edit-2000.dxf`) can show
+  as modified in a checkout because of line endings only. Don't commit them.
 
-- **PRESSPULL:** pull a face or a closed area.
-- **SWEEP, LOFT** (sections, guides, path), **THICKEN**.
-- **POLYSOLID, PYRAMID, HELIX.**
-- **SOLIDEDIT, complete.** Only shell exists today. Missing:
-  - Faces: extrude, move, offset, taper, rotate, delete, copy, colour.
-  - Edges: copy, colour.
-  - Body: imprint, separate, clean, check.
-- **OFFSETEDGE, XEDGES, IMPRINT.**
-- **CONVTOSOLID, CONVTOSURFACE, CONVTOMESH.**
-- **Surface commands:** SURFBLEND, SURFPATCH, SURFNETWORK, SURFOFFSET, SURFFILLET, SURFTRIM, SURFUNTRIM, SURFEXTEND, SURFSCULPT.
-- **3D transforms:**
-  - 3DMOVE, 3DROTATE, 3DSCALE with the gizmos;
-  - MIRROR3D, ROTATE3D, 3DARRAY, ALIGN/3DALIGN.
-  - The placement matrix already makes the maths easy; the interaction is what's missing.
-- **SECTIONPLANE** (live section, with the section object), **LIVESECTION**, **GENERATESECTION**.
-- **Documentation:** SOLVIEW, SOLDRAW, SOLPROF, and VIEWBASE/VIEWPROJ/VIEWSECTION/VIEWDETAIL (2D views from the model in a layout, updated when it changes).
+### Adding a command (checklist, every one of them)
+1. A `CommandSpec` in `crates/engine/src/cmd/solids/<file>.rs`: id = AutoCAD's command name in lower
+   case, label, menu path, AutoCAD's aliases, `params` doc, JSON `run`, `interactive` prompt machine that
+   follows AutoCAD's prompt sequence and options (observe AutoCAD; never copy its help text).
+2. Programmatic calls never open dialogs; JSON runs with defaults.
+3. Tests in `crates/engine/src/cmd/solids/tests.rs`: the JSON form, the interactive form, refusal of bad
+   input, all-or-nothing on several objects, and a hostile-input test where input is a number or a file.
+4. A place on the ribbon (`SOLID_TABS` in `ribbon.rs`), in the panel where AutoCAD on Windows puts it, with
+   an icon drawn in code in `icons.rs`.
+5. Italian label in `crates/ui-egui/src/i18n/it.tsv`; menu entries also in `zh.tsv`.
+6. `docs/solids.md` updated. CHANGELOG: solids are not in release builds yet, so solids-only features have
+   had no CHANGELOG lines; a change that users of release builds see (file reading/writing, 2D) gets one.
 
----
+### Rules that bite in this work
+- **Never crash:** no `unwrap`/`expect`/`panic!`/`unreachable!`/indexing on input; checked arithmetic;
+  cap loops and allocations (ACIS records, mesh sizes, lump/face counts); every crash fix with a test.
+  Kernel calls go through the facade, which turns kernel errors into `SolidError`.
+- **Clean-room:** AutoCAD is observed only from the outside. Never read anything inside an Autodesk
+  install, never commit screenshots of AutoCAD, never copy its icons, materials, visual style definitions,
+  render presets, help text. DWG/DXF files saved by AutoCAD are fine as test data, each with a row in
+  `ATTRIBUTION.md` (`cargo xtask assets` checks it). File formats come from public specs (Autodesk's DXF
+  Reference, ODA's DWG spec, Spatial's published ACIS record layouts) and from the files themselves.
+- **No GPL code**, not even reading it: no LibreDWG, LibreCAD, QCAD, FreeCAD, SolveSpace, OpenCASCADE.
+- **Layers:** only `draftcraft-solid` names `solidcore*` and `cadmpeg*`. Nothing below L5 uses egui.
 
-## 2b. Review of PR 20 (WithShalom, 14 points)
-
-All fourteen are fixed, each with a regression test:
-1–2. Interim file form: each mesh's fingerprint in the record; only unchanged meshes come back, parts found by fingerprint, never by position (`crates/io/src/solid_file.rs`).
-3. CI: a second job, `gate-solids`, runs `cargo xtask ci --solids`.
-4. Mirrored solids: triangles wound back in the 3D view and in the meshes written to files.
-5. SLICE/SECTION: a typed `x,y,z` keeps its Z (`Session::point_z`); a side point on the plane is refused.
-6. FILLETEDGE/CHAMFEREDGE/Shell pick along the line of sight of the current view (`sight`, `pick_edge`, `pick_face`).
-7. Solids inside blocks are drawn in 3D.
-8. Multi-object commands are all or nothing (`Session::all_or_nothing`).
-9. A saved workspace named "3D Modeling" is no longer shadowed by the built-in one.
-10. INTERFERE: box prefilter, bodies read once, no look unless the solid is created.
-11. Opening no longer re-tessellates every solid: only those recovered from their meshes are drawn from their bodies.
-12. The 3D view keeps what it painted until something changes; off-screen faces are left out of the hidden-line grid.
-13. CHANGELOG lines for the workspace menus.
-14. `draftcraft-web` has no `solids` feature; the workspace menus show 3D Modeling greyed out where solids are off.
-
----
-
-## 3. Working in 3D (interaction)
-
-- **3D UCS:** UCS Face, Object, 3point, ZAxis, rotation about X, Y and Z. The **dynamic UCS** (DUCS) follows the face under the cursor while a command runs.
-- **3D object snaps:** vertex, edge midpoint, face centre, knot, perpendicular to a face, nearest on a face (3DOSNAP).
-- **Selecting parts of a solid:** faces, edges and vertices with Ctrl+click (sub-object selection), and selection filters.
-- **Grips on solids:** primitives resized by dragging grips (this needs the history in 1.4); grips on faces and edges.
-- **Properties palette for solids:** type, history, volume, dimensions of the primitive.
-- **Navigation:**
-  - ViewCube, the navigation bar, continuous and free 3DORBIT, 3DZOOM/3DPAN;
-  - perspective view, cameras (CAMERA), walk/fly.
-- **Several 3D viewports**, each with its own view and visual style (the rest of S4).
-- **The 10,000-face test** from the advisory (performance), and a GPU path for drawing.
+### Checking against AutoCAD
+The owner has AutoCAD 2027 and runs AutoCAD checks; ask them for one when a step below says "check in
+AutoCAD". Give them files and what to compare:
+- `DRAFTCRAFT_ACIS_OUT=dir cargo test -p draftcraft-io --features solids write_files_for_autocad -- --ignored`
+  writes the check drawings (extend that test with what you add).
+- In AutoCAD: open each file, note any message, AUDIT, `SOLIDEDIT` ▸ Body ▸ Check on each solid, MASSPROP
+  (volume, centroid, bounding box) compared with DraftCraft's MASSPROP; for new commands, the same object
+  made in AutoCAD saved as DWG/DXF 2000, 2010, 2018 as test data.
+- The other direction: AutoCAD-made drawings of the new object type go into
+  `crates/io/tests/data/acad-solids/` with their MASSPROP in a README, and a test that opens them.
 
 ---
 
-## 4. Visualization and output
+## 3. Everything that is missing
 
-- **Visual styles:** today there are three (wireframe, hidden, shaded). Missing: Realistic, Conceptual with edges as in AutoCAD, Shades of Gray, Sketchy, X-ray, and the visual style manager.
-- **Materials** (library, applied to objects, faces and layers), **lights**, **sun**, **shadows**, **RENDER**.
-- **Plotting 3D viewports from a layout** with hidden lines or shading (shade plot: "As displayed", "Hidden", "Rendered").
+Each item says what AutoCAD does, what DraftCraft has, what to build and what kernel support exists
+(solidcore-ops at `ce5c6e9` has, among others: `extrude`, `revolve`, `sweep_placed`, `sweep_controlled`,
+`sweep_stations`, `sweep_two_rails`, `screw_sweep`, `loft`, `loft_rails`, `loft_to_point`, `loft_blend`,
+`thicken`, `offset_faces`, `offset_sheet`, `remove_faces`, `draft`, `imprint`, `split_body`,
+`split_body_by_sheet`, `split_faces`, `split_face_by_curves`, `stitch`, `extend_sheet`, `fillet_sheets`,
+`network`, `transform`, `check`/`check_solid`/`validate`; `solidcore-step` reads and writes STEP).
+Wrap whatever you use in `draftcraft-solid`'s facade first, with its own tests.
+
+### A. File compatibility (highest priority: the owner's first requirement)
+
+**A1. Check the NURBS writer in AutoCAD.** DraftCraft writes NURBS faces (`spline-surface`, `intcurve-curve`,
+`exppc` pcurves; `crates/solid/src/acis/write.rs`) as SAT 400 and SAB 700, but no file with a NURBS face
+has been opened in AutoCAD yet. Take AutoCAD's LOFT/SWEEP from `acad-solids/solids-free-2018.dwg`, save it
+from DraftCraft as DWG/DXF 2000, 2010, 2013, 2018, and check in AutoCAD (open, AUDIT, Check, MASSPROP).
+The least certain part is the SAB tail after a spline surface's and curve's discontinuity lists
+(`Tok::Sab` in `acis/model.rs`): if 2013/2018 fail while 2010 works, look there first. Also check solids
+made by DraftCraft's own future SWEEP/LOFT the same way.
+
+**A2. DWG 2004–2010 solids stored as SAB.** `modeler()` in `crates/io/src/dwg/entities.rs` reads only SAT
+text before 2013 (`bs != 1` → not read). AutoCAD 2004–2010 DWGs can hold binary SAB (modeler format 2)
+right after the entity header up to the end marker. Read it into the same path as the 2013+ data store,
+with caps on its size, and add AutoCAD-made DWG 2004/2007/2010 test drawings. Check whether DraftCraft
+should also write SAB there (what AutoCAD writes when saving as 2004/2007/2010; observe its files).
+
+**A3. A 3DSOLID or BODY with several separate lumps.** Refused today and kept as saved ("several separate
+solids"). AutoCAD allows one 3DSOLID made of disjoint pieces (UNION of two apart boxes, SOLIDEDIT
+Separate undoes it). Make the body type hold several lumps (check how solidcore's body/record represent
+it), read and write them (the writer already lays out lumps for regions), and make UNION of disjoint solids
+produce one 3DSOLID as AutoCAD does.
+
+**A4. Mirrored ACIS transforms** (determinant < 0): refused in `crates/solid/src/acis/read.rs` (`a mirrored or
+flattened body (not read yet)`). AutoCAD writes them after MIRROR/MIRROR3D. Apply the reflection by
+reversing face senses, and on write, decide whether to bake mirrors into the geometry or write the
+transform as AutoCAD does (observe its files).
+
+**A5. ACIS geometry still refused on read:** conical helix (`apex_factor ≠ 0`); pcurves with
+`wrapper_reversed`; other procedural curves and surfaces (offset curves/surfaces, intersection curves,
+`off_int_cur`, `rb_blend` / blend surfaces of AutoCAD's FILLETEDGE on curved faces, `taper` surfaces of
+SOLIDEDIT Taper, `skin_spl_sur`/`net_spl_sur` if they appear). Read each from its approximation cache as
+`read/legacy.rs` does for `loft_spl_sur`/`sweep_sur`. Make AutoCAD drawings that contain each (fillet on a
+cylinder edge, tapered face, offset face, conical helix sweep, PRESSPULL on a curved face) and test.
+
+**A6. REGIONs not on the XY plane, or with ellipse/spline edges.** Kept as saved today. DraftCraft regions are
+2D (XY, lines and arcs): either give `Region` an elevation/normal (OCS) and curved edges, or open such a
+region as a planar sheet solid/surface. AutoCAD makes regions in any UCS.
+
+**A7. BODY written by DraftCraft:** not checked in AutoCAD (AutoCAD has no command that makes one; use a
+BODY read from a file and saved back). Also BODY that is a sheet or wire: kept as saved.
+
+**A8. Solid history (`ACSH_*` objects, `AcDbShHistory`, SOLIDHIST, `350` link on the 3DSOLID).** Dropped
+today (written as `350 0`). In AutoCAD a primitive keeps its type and dimensions (Properties shows Box
+Length/Width/Height and editing them resizes it), and with SOLIDHIST=1 a boolean keeps its operands.
+Minimum: record the primitive's type and parameters on DraftCraft solids (in `Solid3d`) and write/read
+AutoCAD's history objects for primitives so Properties and grips work in both programs. Then boolean
+history. Until then, at least keep foreign history objects linked to the solid if the body is unchanged.
+
+**A9. Face/edge colours and materials.** ACIS attributes (colour per face from SOLIDEDIT Color Faces,
+`persubent-acadSolidHistory-attrib`, material per face) and MATERIAL objects are not carried. Read them
+into the body (per-face colour/material), draw them, write them back.
+
+**A10. Surface entities.** PLANESURF, NURBSURF, EXTRUDEDSURFACE, LOFTEDSURFACE, SWEPTSURFACE,
+REVOLVEDSURFACE (DXF `SURFACE` subclasses, ACIS sheet bodies plus their creation parameters). Need a
+surface entity in `draftcraft-doc` (sheet body + placement + look + the associative parameters AutoCAD
+stores), reading/writing in DXF/DWG all versions, drawing in the 3D view. Today they are kept as foreign
+data and not drawn in 3D.
+
+**A11. MESH (subdivision mesh).** The `MESH` entity (vertices, faces, edges, crease data, smoothness level)
+is not modelled: read, draw (with its smoothing levels), write, in every version.
+
+**A12. Legacy 3D entities in the 3D view.** The 3D view draws every non-solid object flattened onto Z = 0
+(`crates/ui-egui/src/canvas/view3d.rs`, `to3(0.0)`): 3DFACE, polyface and polygon meshes, 3D polylines,
+lines and points with Z, elevation, thickness (extruded 2D objects), OCS of arcs/circles/polylines in
+other planes, blocks inserted with Z are all wrong in 3D. Draw them at their real 3D positions (and fill
+3DFACE/meshes as faces with hidden-line removal), exactly as AutoCAD's 3D views show them.
+
+**A13. STEP, IGES, STL.** IMPORT and EXPORT of STEP (AP203/AP214) through `solidcore-step` (wrap it in
+the facade); IGES if possible; STLOUT and 3DPRINT from the display mesh (binary and ASCII STL). `export` in
+`crates/engine/src/cmd/exchange.rs` handles dxf/dwg/svg/png/pdf only today.
+
+**A14. Round-trip report.** The `roundtrip` comparator (`crates/io/src/roundtrip*`) should report solids,
+regions and bodies that stay foreign (kept as saved) as such, so the gaps above show in corpus runs.
+
+### B. Solid modelling commands that don't exist
+
+All need the checklist of section 2.
+
+- **POLYSOLID** (wall-like solid along lines/arcs; Height, Width, Justify, Object option on existing 2D).
+- **PYRAMID** (sides, inscribed/circumscribed, top radius, axis endpoint) — add to Primitive panel next to BOX…
+- **HELIX** exists as a 2D/3D curve entity; make sure it is usable as a SWEEP path.
+- **SWEEP** (profiles along a path: Alignment, Base point, Scale, Twist, Bank; profiles can be open → surface).
+  Kernel: `sweep_placed` / `sweep_controlled`, `screw_sweep` for helices.
+- **LOFT** (cross sections, Guides, Path, Cross sections only with ruled/smooth/normal/draft settings; open
+  sections → surface). Kernel: `loft`, `loft_rails`, `loft_to_point`, `loft_blend`.
+- **PRESSPULL** (click inside a bounded area or on a face; extrude/cut by dragging or typing; multiple).
+  Needs face picking (D1) and the "bounded area" detection that BOUNDARY/HATCH already do in 2D.
+- **THICKEN** (surface → solid). Kernel: `thicken`. Needs surfaces (A10).
+- **EXTRUDE** missing options: Direction, Path, Mode (solid/surface), extrude of faces; extrude of open
+  profiles into surfaces.
+- **REVOLVE** missing options: object as axis, X/Y/Z axis, start angle, Reverse, Mode surface.
+- **INTERSECT/UNION/SUBTRACT:** union of disjoint solids into one (A3); boolean with surfaces.
+- **SLICE** missing options: Surface (slice by a surface), Object (by a circle/arc/2D polyline plane),
+  View, Zaxis, 3points as AutoCAD names them.
+- **FILLETEDGE / CHAMFEREDGE** options: Chain, Loop, Radius/Distance by expression, multiple radii; the
+  preview while choosing.
+- **SOLIDEDIT, everything except Shell** (only Shell exists; others say "not available yet"):
+  - Face: Extrude (`offset_faces`/`extrude`), Move, Rotate, Offset (`offset_faces`), Taper (`draft`),
+    Delete (`remove_faces`), Copy (to a region/body/surface), coLor.
+  - Edge: Copy (to lines/arcs/splines), coLor.
+  - Body: Imprint (`imprint`), seParate solids (A3), Shell (exists), cLean, Check (`check_solid`).
+  - Undo inside the command.
+- **IMPRINT** (as its own command), **OFFSETEDGE** (offset a face's edges as a 2D object on that face),
+  **XEDGES** (wireframe geometry from a solid's edges).
+- **CONVTOSOLID, CONVTOSURFACE, CONVTOMESH, CONVTONURBS** (polylines/circles with thickness, meshes,
+  regions, surfaces).
+- **INTERFERE**: the AutoCAD dialog's options (nested selection, check pairs within a set, zoom to pair).
+- **MASSPROP**: write the results to a `.mpr` file option.
+
+### C. 3D transforms
+
+Nothing exists; MOVE/ROTATE/SCALE/MIRROR work in 2D only (they already change a solid's placement).
+- **3DMOVE, 3DROTATE, 3DSCALE** with the move/rotate/scale gizmos (drawn in code), axis/plane constraint,
+  gizmo relocation; gizmo shown when a solid is selected in a 3D visual style (DEFAULTGIZMO).
+- **MIRROR3D** (Object, Last, Zaxis, View, XY/YZ/ZX, 3points) — needs mirrored placements to save
+  correctly (A4).
+- **ROTATE3D** (axis by object, last, view, X/Y/Z, 2 points).
+- **3DARRAY** (rectangular with levels, polar about an axis) and **ARRAYRECT/ARRAYPOLAR/ARRAYPATH** with
+  Levels and Z spacing for 3D objects.
+- **3DALIGN** (3 source points to 3 destination points); **ALIGN** in 3D (it exists, check it with solids
+  and Z).
+- **COPY/MOVE/STRETCH with 3D points**: typed `x,y,z` and picked points on faces/edges.
+
+### D. Working with parts of solids
+
+- **D1. Sub-object selection:** Ctrl+click picks a face, edge or vertex (and history sub-objects);
+  selection filters (no filter / vertex / edge / face / history) on the ribbon; highlight of the hovered
+  sub-object; Ctrl+drag window selection of sub-objects.
+- **D2. Grips on solids:** today a solid's grip only translates it (`crates/engine/src/grips.rs`). AutoCAD
+  shows grips per primitive (box: corner and face-centre arrows that change length/width/height; cylinder:
+  radius and height; cone: base radius, top radius, height; sphere: radius; torus; wedge; pyramid; extrusion
+  height and taper) and grips on sub-objects (move/rotate/scale a face, edge or vertex). Needs primitive
+  history (A8).
+- **D3. Properties palette for solids:** solid type, history (Record/Show), dimensions of the primitive
+  (editable), volume (read only), material, and for faces/edges when sub-objects are selected.
+- **D4. Sub-object editing with the gizmos:** move/rotate/scale a face, edge or vertex (C + D1).
+- **D5. LIST / ID / DIST in 3D:** LIST on a solid shows what AutoCAD shows (type, layer, bounding box,
+  history); DIST and ID report Z and work with 3D snaps.
+
+### E. Working in 3D (the drawing environment)
+
+- **E1. The UCS command does not exist** (only the named UCS table, `d.ucss`, is kept). AutoCAD's UCS:
+  World, Previous, Origin, Face, Object, View, X/Y/Z rotation, Z axis, 3 points, Named (save, restore,
+  delete), the UCS icon in 3D, UCSMAN, PLAN of the current UCS, the UCS grips on the icon. Every command
+  must work in the current UCS (2D drawing commands draw in the UCS's XY plane; typed coordinates are UCS
+  coordinates; ELEV/elevation). This is a big change in the engine: plan it carefully and test it widely.
+- **E2. Dynamic UCS (DUCS, F6):** while a drawing command runs, the UCS follows the planar face under the
+  cursor.
+- **E3. 3D object snaps (3DOSNAP, F4):** zvertex, zmidpoint, zcenter (of a face), zknot, zperpendicular,
+  znearest; and the 2D snaps (endpoint, midpoint, center, quadrant…) working on solid edges and on 3D
+  objects in the 3D view, with the snap markers drawn there; object snap tracking in 3D.
+- **E4. Point input in the 3D view:** today a point prompt gives the point on the XY plane only. Use the
+  current UCS plane, faces under the cursor (with DUCS), snaps, and typed `x,y,z`/`@dx,dy,dz`/cylindrical
+  and spherical coordinates.
+- **E5. Perspective projection** (PERSPECTIVE variable, ViewCube menu Parallel/Perspective), field of view
+  / lens length; **CAMERA** objects (create, list, view through, camera glyphs); **3DWALK / 3DFLY**,
+  **3DDISTANCE, 3DSWIVEL, 3DZOOM, 3DPAN**, continuous orbit (3DCORBIT), free orbit (3DFORBIT), orbit
+  about the selection or a pivot, **3DCLIP** (front/back clipping), **DVIEW** in 3D (it exists, check it),
+  **VIEW** saving/restoring 3D views (named views with direction, visual style, background).
+- **E6. Several viewports in 3D:** a 3D view, visual style and UCS per tiled model viewport (VPORTS
+  exists but the 3D view belongs to model space only), and per layout viewport (VPOINT/visual style inside
+  a paper-space viewport, plotting it).
+- **E7. Selection in the 3D view:** window and crossing selection (rectangle and lasso) in 3D, cycling
+  through overlapping objects, selection of 2D objects at their real Z.
+- **E8. Commands in non-plan views:** every 2D command (LINE, CIRCLE, MOVE, COPY, ROTATE, TRIM…) used
+  while the 3D view is on works in the current UCS with picks in 3D, as in AutoCAD.
+
+### F. Sections and drawings from the model
+
+- **SECTIONPLANE** (section object: plane, slice, boundary, volume states; jogs), **LIVESECTION**
+  (live cut display), **GENERATESECTION / SECTIONPLANETOBLOCK** (2D/3D section blocks with hatching and
+  settings), **SECTIONSPINNER** etc. Save the SECTIONOBJECT entity and its settings objects in DXF/DWG.
+- **SOLVIEW, SOLDRAW, SOLPROF** (layout viewports with hidden/visible profile layers).
+- **VIEWBASE, VIEWPROJ, VIEWSECTION, VIEWDETAIL, VIEWEDIT, VIEWUPDATE** (model documentation: drawing
+  views in layouts that update when the model changes; their objects in DXF/DWG).
+- **FLATSHOT** dialog options (foreground/obscured lines colour and linetype, insert as block vs. export
+  to file, tangential edges). Today: lines/arcs/circles with optional HIDDEN linetype.
+- **HIDE** and shade plot: plotting a 3D viewport "As displayed", "Wireframe", "Hidden", "Conceptual",
+  "Realistic", "Rendered" from a layout (Output ▸ Plot and PUBLISH, PDF and raster outputs).
+
+### G. Visualization
+
+- **G1. Visual style details:** the styles exist; missing are VISUALSTYLES (the manager palette with face,
+  edge, lighting, environment settings), user-defined styles saved in the drawing (`VISUALSTYLE` objects in
+  DXF/DWG, read and written), Sketchy, edge jitter/overhang, silhouette width, isolines on curved faces,
+  facet smoothness (FACETRES/VIEWRES equivalents), backgrounds (solid, gradient, image, sun & sky).
+- **G2. Materials:** MATERIALS browser and editor, attaching materials to objects, faces and layers
+  (MATERIALATTACH, MATERIALASSIGN), material mapping (MATERIALMAP), `MATERIAL` objects in DXF/DWG. Our own
+  material library only (never Autodesk's).
+- **G3. Lights and sun:** POINTLIGHT, SPOTLIGHT, DISTANTLIGHT, WEBLIGHT, default lighting, SUNPROPERTIES,
+  GEOGRAPHICLOCATION, light glyphs, `LIGHT` entities and `SUN` object in files.
+- **G4. RENDER:** render window, render presets (our own), render to file, shadows in the viewport.
+- **G5. A GPU path** for the 3D view (wgpu exists in the egui stack): the CPU painter will not handle large
+  models. The advisory's acceptance target (10,000 faces smooth, also in the browser) has never been
+  measured; measure and meet it.
+
+### H. Surface and mesh modelling (the Surface and Mesh ribbon tabs are absent)
+
+- **Surfaces:** PLANESURF, SURFNETWORK (`network`), SURFBLEND, SURFPATCH, SURFOFFSET (`offset_sheet`),
+  SURFFILLET (`fillet_sheets`), SURFEXTEND (`extend_sheet`), SURFTRIM, SURFUNTRIM, SURFSCULPT (`stitch` +
+  solid), SURFEXTRACTCURVE, NURBS surface control-vertex editing (CVSHOW, CVHIDE, CVADD, CVREMOVE,
+  CVREBUILD, 3DEDITBAR), SURFACEASSOCIATIVITY, SURFACEMODELINGMODE. Needs A10.
+- **Mesh:** MESH primitives (box, cone, cylinder, pyramid, sphere, wedge, torus), MESHSMOOTH,
+  MESHSMOOTHMORE/LESS, MESHREFINE, MESHCREASE/UNCREASE, MESHSPLIT, MESHEXTRUDE, MESHMERGE, MESHCAP,
+  MESHCOLLAPSE, MESHSPIN. Needs A11.
+- **Legacy surfaces:** 3DFACE, 3DMESH, PFACE, RULESURF, TABSURF, REVSURF, EDGESURF, EDGE (visibility),
+  SURFTAB1/SURFTAB2. The entities 3DFACE and polyface mesh exist in the document; the commands don't.
+- **Ribbon:** add the Surface and Mesh tabs, and the panels left out of the 3D Modeling workspace
+  (Coordinates, Model Viewports, Selection with sub-object filters, Lights, Materials, Render, Camera) as
+  their commands land. Each with drawn icons and translations.
+
+### I. Platform and quality
+
+- **I1. Solids in the browser:** `draftcraft-web` has no `solids` feature because on wasm a kernel panic
+  aborts the app (`catch_unwind` doesn't work there). Find or get a panic-free path in solidcore (or
+  validate inputs so the kernel's panicking paths are unreachable, fuzz-tested), then turn `solids` on
+  for the web build and pass `cargo xtask wasm`.
+- **I2. Releases:** decide with the owner when `solids` goes into release builds (`release.yml`), then add
+  CHANGELOG lines for the 3D features.
+- **I3. Robustness:** fuzz the ACIS reader with hostile SAT/SAB (there are `hostile_*` tests; extend them
+  to every new record kind), and every new command with degenerate input (zero size, coincident points,
+  self-intersecting profiles, huge counts).
+- **I4. Performance:** opening drawings with thousands of solids, booleans on large bodies, the hidden-line
+  FLATSHOT on many solids; profile and set limits that report instead of hanging.
+- **I5. Undo:** every 3D command and view change behaves with UNDO as AutoCAD's does (view changes are not
+  undone today, as in AutoCAD; check 3D edits group correctly).
+- **I6. MCP / control channel:** expose the 3D view (direction, style) and solid info through MCP so agents
+  can drive and check 3D work (`crates/mcp`), and document it.
 
 ---
 
-## 5. Platform
+## 4. Suggested order
 
-- **Solids in the browser:** the web build keeps `solids` off. On wasm a kernel panic aborts the app, because `catch_unwind` doesn't work there (open question 1 in `docs/solids.md`). Solidcore needs a panic-free mode, or another solution.
+1. **A1** (NURBS check in AutoCAD), **A2** (DWG 2004–2010 SAB), **A4** (mirrors), **A3** (lumps): file
+   compatibility first, as the owner asked.
+2. **A12** (legacy 3D objects drawn at their real Z) and **E1–E4** (UCS, DUCS, 3D snaps, 3D point input):
+   without these, nothing else in 3D feels like AutoCAD.
+3. **C** (3DMOVE, 3DROTATE, 3DSCALE, MIRROR3D, 3DALIGN, 3DARRAY).
+4. **D1–D3** (sub-objects, grips, Properties) with **A8** (primitive history).
+5. **B**: PRESSPULL, SWEEP, LOFT, POLYSOLID, PYRAMID, the rest of SOLIDEDIT, then the remaining options.
+6. **A13** STEP/STL, **A5**/**A6**/**A9** remaining ACIS cases.
+7. **E5–E8** (perspective, cameras, viewports), **F** (section objects, drawing views), **G**
+   (visual style manager, materials, lights, render, GPU), **A10/A11/H** (surfaces, meshes), **I**.
 
----
-
-## 6. Rules to follow (from AGENTS.md)
-
-- **Never crash:**
-  - no `unwrap`, `expect`, `panic!` or direct indexing on data coming from files;
-  - checked arithmetic, capped loops and allocations;
-  - every crash fix lands with a regression test.
-- **Clean-room:**
-  - AutoCAD is only observed from the outside, as a black box: never read or copy anything inside its installation, and never commit screenshots.
-  - DWG and DXF files are allowed as test drawings, each with its row in `ATTRIBUTION.md`.
-  - No GPL code: no LibreDWG, OpenCASCADE, FreeCAD and so on, not even read.
-- **AutoCAD checks** always run in a separate side session using computer use.
-- **Layers:** `draftcraft-solid` is the only crate that names `solidcore*` and `cadmpeg*` (`cargo xtask layers`).
-- **Before every commit:** `cargo xtask ci` and `cargo xtask ci --solids`. Only three failures are accepted, and only on macOS: `non_unicode_output_names`, `read_file_refuses_a_name_that_is_not_unicode`, `thai_marks_stack_in_an_installed_font`.
-- **Commits** end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-
-## Recommended order
-
-1. Check in AutoCAD the `round3` files: SAT 400 in DWG 2000/2010 and the cone. Then re-check every version.
-2. Check NURBS solids in AutoCAD (1.1 and 1.2 are written).
-3. REGION and BODY (1.3, done; regions checked in AutoCAD), DWG 2004–2010 with SAB (1.4).
-4. 3D UCS, 3D snaps, selecting parts of a solid, grips (3).
-5. PRESSPULL, SWEEP, LOFT, SOLIDEDIT on faces (2).
-6. STEP import/export (1.5).
-7. Everything else: surfaces, MESH, documentation views, materials and render, the web.
+After each step: gates green, `docs/solids.md` updated, this file updated (move done items to section 1),
+commit and push to `feat/solids-3d`.

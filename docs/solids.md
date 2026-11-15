@@ -168,7 +168,7 @@ The interface follows the structure of AutoCAD's 3D Modeling workspace on Window
 Not done yet:
 - A view per tiled viewport and per layout viewport (the 3D view is model space's only).
 - Object snaps and grips in the 3D view.
-- Face and edge picking for FILLETEDGE, CHAMFEREDGE and SOLIDEDIT (they pick by XY position, so use them in the plan view).
+- Sub-object selection (Ctrl+click on a face, edge or vertex). FILLETEDGE, CHAMFEREDGE and SOLIDEDIT Shell already pick along the line of sight of the current view.
 - UCS on a face.
 - A GPU path.
 - The "smooth at 10,000 faces in the browser" acceptance, which has not been measured.
@@ -214,6 +214,9 @@ The three checks from the advisory's section 5:
 3. **Shell limits.** Which bodies is SOLIDEDIT shell expected to handle (curved faces, several removed faces)? What should a user see when it can't?
 
 ### Next steps
+
+The full list of what is still missing compared with AutoCAD, with the order to do it in, is `handoff.md` at the repository root.
+
 
 1. ACIS: check NURBS faces in AutoCAD (both ways are written); several lumps per 3DSOLID, REGION and BODY.
 2. S4 remainder: a view per viewport, snaps in 3D, face and edge picking, a GPU path, and measuring the 10,000-face acceptance.
