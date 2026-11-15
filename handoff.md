@@ -40,17 +40,20 @@ Side note: every DXF draws the warning "unknown header variable `$CTABLESTYLE`".
 
 ## 1. File compatibility (top priority)
 
-### 1.1 Free-form (NURBS) solids, reading
-- **Symptom:** solids made with LOFT, SWEEP and blends on curved surfaces don't open as solids. They stay as AutoCAD saved them, and DraftCraft writes them back intact, so nothing is lost. The note on open says why. Test: `autocad_free_form_solids_never_crash_and_say_what_is_left` (`solids-free-2018.dwg`).
-- **Cause:** solidcore can't make pcurves of a NURBS edge on a spline surface ("no exact pcurve of a NURBS on a spline surface"), and the solidcore STEP reader ignores the file's PCURVEs.
-- **Fix:** pass ACIS's own pcurves to the kernel in `impl Trims for Kernel` (`crates/solid/src/acis/read.rs`).
-  - In cadmpeg's IR, each coedge has `pcurves: [{parameter_range, pcurve}]`.
-  - The geometry of each pcurve is in `v["pcurves"]`, as `{kind:"nurbs", degree, knots, poles:{form, points:[{u,v}]}}`.
-  - For a `reversed` coedge the parameter is negated (range `[-0, -40]` against an edge on `[0, 40]`): flip the poles, and negate and flip the knots, so the pcurve runs in the edge's direction on its interval (`EdgeUse.given`).
-  - You need to match the `TrimFace` passed by solidcore to the ACIS face (for example by the face's vertex positions and each edge's endpoints).
-  - Then check the result by lifting the pcurve onto the surface.
-- **Helix edges** (SWEEP along HELIX): in the IR the curve is `kind:"procedural"`, with the definition in `v["procedural_curves"]` (`kind:"helix"`: center, axis, major, minor, pitch, angle_range) and no cache. Build an interpolating B-spline of it, dense enough to stay within tolerance.
-- NURBS surfaces and curves are already mapped from the real IR (`nurbs_surface`, `nurbs_curve`). The `u_periodic` ones have clamped knots and are read as ordinary B-splines.
+### 1.1 Free-form (NURBS) solids, reading — done, not yet checked in AutoCAD
+- AutoCAD's LOFT and SWEEP-along-HELIX solids in `solids-free-2018.dwg` now open as solids. Test: `autocad_free_form_solids_read`.
+- How (`crates/solid/src/acis/read.rs`):
+  - **ACIS pcurves.** `impl Trims for Kernel` hands the kernel ACIS's own pcurves on spline faces (`Kernel::given`). The data's face is matched to the kernel's `TrimFace` by each use's edge ends and direction, trying the loop both ways.
+    - A reversed coedge's pcurve is turned round (`pcurve`).
+    - `uv_offset` is applied.
+    - Periodic pcurves (clamped knots) are accepted.
+  - **Parameter mapping.** Where the kernel's edge parameter differs from ACIS's (record circles in quarter turns, lines on [0, 1]), the pcurve is resampled onto it (`remapped`: a Hermite cubic through 32 spans). The ACIS parameter of each point comes from the edge's own curve (`AcisParam`) and its range (`EdgeParam`).
+  - **Helix edges.** A procedural helix becomes a cubic spline of 64 Bézier spans per turn (`helix_spline`), at most 2^16 spans.
+  - **Closed circle edges.** The circle's reference passes through the vertex, nudged a few roundings until solidcore's STEP reader puts the vertex exactly at angle 0 (`closed_circle_placement`). Otherwise the kernel starts the turn a whole turn later and refuses the form.
+- **Still open:**
+  - a helix with `apex_factor ≠ 0` (a conical helix) is refused;
+  - a pcurve with `wrapper_reversed` is refused;
+  - other procedural curves (offset, intersection) have no definition yet.
 
 ### 1.2 Free-form (NURBS) solids, writing (W3)
 - `crates/solid/src/acis/write.rs` refuses B-spline curves and surfaces. A DraftCraft solid with such faces is saved in the interim form (polyface mesh plus the exact body in an XRECORD), and AutoCAD sees a mesh.
@@ -149,7 +152,7 @@ Each one is a `CommandSpec` in `crates/engine/src/cmd/solids/*`, with tests, a r
 ## Recommended order
 
 1. Check in AutoCAD the `round3` files: SAT 400 in DWG 2000/2010 and the cone. Then re-check every version.
-2. NURBS solids, reading (1.1), then writing (1.2).
+2. NURBS solids, writing (1.2); reading (1.1) is done.
 3. REGION and BODY (1.3), DWG 2004–2010 with SAB (1.4).
 4. 3D UCS, 3D snaps, selecting parts of a solid, grips (3).
 5. PRESSPULL, SWEEP, LOFT, SOLIDEDIT on faces (2).

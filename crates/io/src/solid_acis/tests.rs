@@ -84,16 +84,15 @@ fn autocad_edited_solids_open_as_solids() {
 }
 
 #[test]
-fn autocad_free_form_solids_never_crash_and_say_what_is_left() {
-    // LOFT and SWEEP make spline surfaces: a solid read, or a note saying why it is kept as saved.
+fn autocad_free_form_solids_read() {
+    // LOFT (a spline surface through a circle and a square) and SWEEP of a circle along a helix
+    // (a procedural helix, closed circle edges): both read through ACIS's own pcurves.
     let name = "solids-free-2018.dwg";
     let d = crate::read(&data(name), name).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let read = solids(&d).len();
+    let read = solids(&d);
     let kept = d.model.iter().filter(|e| matches!(&e.kind, EntityKind::Unknown(u) if u.dxf_type == "3DSOLID")).count();
-    assert_eq!(read + kept, 2, "{name}");
-    if kept > 0 {
-        assert!(d.read_notes.iter().any(|n| n.contains("3D solid")), "{name}: {:?}", d.read_notes);
-    }
+    assert_eq!((read.len(), kept), (2, 0), "{name}: {:?}", d.read_notes);
+    assert!(read.iter().all(|(v, _)| v.is_finite() && *v > 0.0), "{name}: {read:?}");
 }
 
 /// A drawing with a box placed away from the origin and a box with a hole.

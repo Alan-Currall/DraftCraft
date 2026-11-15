@@ -253,8 +253,14 @@ impl Geometry {
         }
     }
 
-    fn curve(&self, c: &Value) -> Result<Option<Curve>> {
-        let g = solved(c.get("geometry")).ok_or_else(|| err("an edge without a curve"))?;
+    fn curve(&self, c: &Value, procedural: &HashMap<&str, &Value>) -> Result<Option<Curve>> {
+        let geometry = c.get("geometry");
+        if let Some(def) = geometry.filter(|g| g.get("cache").is_none()).and_then(|g| g.get("construction")).and_then(Value::as_str)
+            && let Some(def) = procedural.get(def).and_then(|p| p.get("definition"))
+        {
+            return self.procedural_curve(def).map(Some);
+        }
+        let g = solved(geometry).ok_or_else(|| err("an edge without a curve"))?;
         let kind = g.get("kind").and_then(Value::as_str).unwrap_or("");
         let bad = || err(format!("a {kind} curve the reader can't take"));
         Ok(Some(match kind {
@@ -276,6 +282,35 @@ impl Geometry {
             "nurbs" => self.nurbs_curve(g).ok_or_else(bad)?,
             _ => return Err(bad()),
         }))
+    }
+
+    /// A length vector (no shift).
+    fn vector(&self, v: &Value, key: &str) -> Option<P3> {
+        let p = xyz(v, key)?;
+        Some(self.apply([p[0] / self.mm, p[1] / self.mm, p[2] / self.mm]))
+    }
+
+    /// A procedural curve with no cached form: a helix (SWEEP along HELIX), as a cubic B-spline
+    /// through it whose parameter is the helix's angle at every knot, so ACIS's pcurves, which
+    /// run on that angle, fit it.
+    fn procedural_curve(&self, def: &Value) -> Result<Curve> {
+        let kind = def.get("kind").and_then(Value::as_str).unwrap_or("");
+        let bad = || err(format!("a {kind} curve the reader can't take"));
+        if kind != "helix" {
+            return Err(bad());
+        }
+        if num(def, "apex_factor").is_some_and(|a| a.abs() > 1e-12) {
+            return Err(err("a tapered helix (not read yet)"));
+        }
+        let center = self.point(def, "center").ok_or_else(bad)?;
+        let (major, minor, pitch) =
+            (self.vector(def, "major").ok_or_else(bad)?, self.vector(def, "minor").ok_or_else(bad)?, self.vector(def, "pitch").ok_or_else(bad)?);
+        let range = def.get("angle_range").and_then(Value::as_array).ok_or_else(bad)?;
+        let (t0, t1) = (range.first().and_then(Value::as_f64).ok_or_else(bad)?, range.get(1).and_then(Value::as_f64).ok_or_else(bad)?);
+        if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
+            return Err(bad());
+        }
+        helix_spline(center, major, minor, pitch, t0, t1).ok_or_else(bad)
     }
 
     /// A pole: a point (`polynomial`) or a point and its weight (`rational`).
@@ -397,6 +432,266 @@ fn distinct(full: &[f64]) -> (Vec<f64>, Vec<usize>) {
     (knots, mults)
 }
 
+/// Nudges tried, each way, to land a closed circle edge's vertex exactly on its circle's angle 0.
+const CLOSED_CIRCLE_TRIES: i32 = 64;
+
+/// Spans of a helix's spline per turn: a cubic through 64 points a turn strays less than a
+/// millionth of the radius.
+const HELIX_SPANS_PER_TURN: f64 = 64.0;
+/// Most spans of one helix.
+const MAX_HELIX_SPANS: usize = 1 << 16;
+
+/// A helix `center + major cos t + minor sin t + pitch t / 2π` on `[t0, t1]` as a cubic B-spline:
+/// a Bézier segment per span, its inner poles from the helix's tangents (Hermite), each knot the
+/// angle there.
+fn helix_spline(center: P3, major: P3, minor: P3, pitch: P3, t0: f64, t1: f64) -> Option<Curve> {
+    let turns = (t1 - t0) / std::f64::consts::TAU;
+    let spans = (turns * HELIX_SPANS_PER_TURN).ceil();
+    if !(spans.is_finite() && spans >= 1.0 && spans <= MAX_HELIX_SPANS as f64) {
+        return None;
+    }
+    let n = spans as usize;
+    let k = 1.0 / std::f64::consts::TAU;
+    let at = |t: f64| add(add(add(center, major, t.cos()), minor, t.sin()), pitch, t * k);
+    let tangent = |t: f64| add(add(scale(major, -t.sin()), minor, t.cos()), pitch, k);
+    let h = (t1 - t0) / spans;
+    let mut points = vec![at(t0)];
+    let mut knots = vec![t0];
+    let mut multiplicities = vec![4];
+    for i in 0..n {
+        let (a, b) = (t0 + h * i as f64, if i + 1 == n { t1 } else { t0 + h * (i + 1) as f64 });
+        points.push(add(at(a), tangent(a), h / 3.0));
+        points.push(add(at(b), tangent(b), -h / 3.0));
+        points.push(at(b));
+        knots.push(b);
+        multiplicities.push(if i + 1 == n { 4 } else { 3 });
+    }
+    Some(Curve::BSpline(Box::new(BSplineCurve {
+        degree: 3,
+        points,
+        weights: None,
+        knots,
+        multiplicities,
+        form: CurveForm::Unspecified,
+        closed: Logical::False,
+        self_intersect: Logical::False,
+        knot_spec: KnotSpec::Unspecified,
+    })))
+}
+
+fn scale(a: P3, k: f64) -> P3 {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+
+/// An ACIS pcurve as the kernel takes it: on its edge's interval, in its edge's direction. A
+/// reversed coedge's pcurve runs on the negated parameter (`p(-t)`), so its poles and knots turn
+/// round. `None` when it isn't a B-spline.
+fn pcurve(p: &Value, reversed: bool) -> Option<Curve2> {
+    let meta = p.get("metadata").and_then(|m| m.get("form"));
+    if meta.and_then(|m| m.get("wrapper_reversed")).and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let offset = meta.and_then(|m| m.get("uv_offset")).and_then(Value::as_array);
+    let off = |i: usize| offset.and_then(|o| o.get(i)).and_then(Value::as_f64).filter(|x| x.is_finite()).unwrap_or(0.0);
+    let (du, dv) = (off(0), off(1));
+    let g = p.get("geometry")?;
+    // A pcurve marked periodic (one that goes once round a closed surface) comes with clamped
+    // knots: read as an ordinary B-spline.
+    if g.get("kind").and_then(Value::as_str) != Some("nurbs") {
+        return None;
+    }
+    let degree = usize::try_from(g.get("degree")?.as_u64()?).ok().filter(|d| (1..=MAX_DEGREE).contains(d))?;
+    let rows = g.get("poles")?.get("points")?.as_array()?;
+    if rows.len() > MAX_POLES {
+        return None;
+    }
+    let mut knots: Vec<f64> = g.get("knots")?.as_array()?.iter().map(|k| k.as_f64().filter(|k| k.is_finite())).collect::<Option<_>>()?;
+    if knots.len() != rows.len().checked_add(degree)?.checked_add(1)? || knots.windows(2).any(|w| w[1] < w[0]) {
+        return None;
+    }
+    let uv = |v: &Value| Some([v.get("u")?.as_f64().filter(|x| x.is_finite())? + du, v.get("v")?.as_f64().filter(|x| x.is_finite())? + dv]);
+    let mut homogeneous: Vec<[f64; 3]> = Vec::with_capacity(rows.len());
+    let mut rational = false;
+    for v in rows {
+        match v.get("point") {
+            Some(q) => {
+                let w = num(v, "weight").filter(|w| *w > 0.0)?;
+                let [u, vv] = uv(q)?;
+                rational = true;
+                homogeneous.push([u * w, vv * w, w]);
+            }
+            None => {
+                let [u, vv] = uv(v)?;
+                homogeneous.push([u, vv, 1.0]);
+            }
+        }
+    }
+    if reversed {
+        homogeneous.reverse();
+        knots = knots.iter().rev().map(|k| -k).collect();
+    }
+    Some(if rational {
+        Curve2::RationalSpline { knots, homogeneous }
+    } else {
+        Curve2::Spline { knots, points: homogeneous.iter().map(|h| [h[0], h[1]]).collect() }
+    })
+}
+
+/// How a point of an edge gives its ACIS parameter: a line's distance along it, a circle's or an
+/// ellipse's angle; a spline edge keeps its parameter (`None`).
+#[derive(Clone, Copy, Debug)]
+enum AcisParam {
+    Line { origin: P3, direction: P3 },
+    Conic { center: P3, x: P3, y: P3, a: f64, b: f64 },
+}
+
+impl AcisParam {
+    fn of(c: &Curve) -> Option<AcisParam> {
+        match c {
+            Curve::Line { origin, direction, .. } => Some(AcisParam::Line { origin: *origin, direction: unit(*direction)? }),
+            Curve::Circle { position, radius } => AcisParam::conic(position, *radius, *radius),
+            Curve::Ellipse { position, semi_axis_1, semi_axis_2 } => AcisParam::conic(position, *semi_axis_1, *semi_axis_2),
+            _ => None,
+        }
+    }
+    fn conic(p: &Placement, a: f64, b: f64) -> Option<AcisParam> {
+        let (z, x) = (unit(p.axis)?, unit(p.ref_direction)?);
+        (a > 0.0 && b > 0.0).then(|| AcisParam::Conic { center: p.origin, x, y: cross(z, x), a, b })
+    }
+    /// The parameter of `q`, an angle taken within π of `near`.
+    fn at(&self, q: P3, near: f64) -> f64 {
+        let d = |o: P3| [q[0] - o[0], q[1] - o[1], q[2] - o[2]];
+        let dot = |a: P3, b: P3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        match *self {
+            AcisParam::Line { origin, direction } => dot(d(origin), direction),
+            AcisParam::Conic { center, x, y, a, b } => {
+                let v = d(center);
+                let t = (dot(v, y) / b).atan2(dot(v, x) / a);
+                let turn = std::f64::consts::TAU;
+                t + ((near - t) / turn).round() * turn
+            }
+        }
+    }
+}
+
+/// How an edge's points give their ACIS parameter, and the edge's ACIS parameter range in its
+/// direction: a pcurve may run on a range of its own (a loft's side on [0, 1] along an edge
+/// 80 long), linear in the edge's parameter.
+#[derive(Clone, Copy, Debug)]
+struct EdgeParam {
+    how: AcisParam,
+    range: [f64; 2],
+}
+
+/// The ACIS pcurves of one face on a spline surface: each use's edge ends, whether the loop runs
+/// along the edge, its pcurve, and how its edge's points give their ACIS parameter.
+struct FacePcurves {
+    uses: Vec<(P3, P3, bool, Curve2, Option<EdgeParam>)>,
+}
+
+/// The point of a B-spline at `t` (de Boor), its poles homogeneous or not.
+fn de_boor<const N: usize>(knots: &[f64], poles: &[[f64; N]], t: f64) -> Option<[f64; N]> {
+    let degree = knots.len().checked_sub(poles.len().checked_add(1)?)?;
+    let (lo, hi) = (*knots.get(degree)?, *knots.get(poles.len())?);
+    if !(t.is_finite() && hi > lo) {
+        return None;
+    }
+    let t = t.clamp(lo, hi);
+    // The span: knots[k] <= t < knots[k + 1], within [degree, poles - 1].
+    let mut k = degree;
+    while k + 1 < poles.len() && *knots.get(k + 1)? <= t {
+        k += 1;
+    }
+    let mut d: Vec<[f64; N]> = (0..=degree).map(|j| poles.get(k + j - degree).copied()).collect::<Option<_>>()?;
+    for r in 1..=degree {
+        for j in (r..=degree).rev() {
+            let i = k + j - degree;
+            let (a, b) = (*knots.get(i)?, *knots.get(i + degree + 1 - r)?);
+            let alpha = if b > a { (t - a) / (b - a) } else { 0.0 };
+            let (prev, cur) = (*d.get(j - 1)?, *d.get(j)?);
+            let slot = d.get_mut(j)?;
+            for n in 0..N {
+                slot[n] = (1.0 - alpha) * prev[n] + alpha * cur[n];
+            }
+            let _ = cur;
+        }
+    }
+    d.get(degree).copied()
+}
+
+/// The point of the kernel's edge curve at `t`.
+fn record_point(c: &solidcore_record::brep::Curve, t: f64) -> Option<P3> {
+    use solidcore_record::brep::Curve as C;
+    match c {
+        C::Line { start, end } => Some(add(*start, [end[0] - start[0], end[1] - start[1], end[2] - start[2]], t)),
+        C::Circle { frame, radius } => Some(add(add(frame.origin, frame.x_axis, radius * t.cos()), frame.y_axis, radius * t.sin())),
+        C::Ellipse { frame, radii } => Some(add(add(frame.origin, frame.x_axis, radii[0] * t.cos()), frame.y_axis, radii[1] * t.sin())),
+        C::Spline { knots, points } => de_boor(knots, points, t),
+        C::RationalSpline { knots, homogeneous } => {
+            let h = de_boor(knots, homogeneous, t)?;
+            (h[3].abs() > 1e-300).then(|| [h[0] / h[3], h[1] / h[3], h[2] / h[3]])
+        }
+        _ => None,
+    }
+}
+
+/// The (u, v) of a pcurve at `t`.
+fn uv_at(c: &Curve2, t: f64) -> Option<[f64; 2]> {
+    match c {
+        Curve2::Spline { knots, points } => de_boor(knots, points, t),
+        Curve2::RationalSpline { knots, homogeneous } => {
+            let h = de_boor(knots, homogeneous, t)?;
+            (h[2].abs() > 1e-300).then(|| [h[0] / h[2], h[1] / h[2]])
+        }
+    }
+}
+
+/// Spans of a pcurve moved onto the kernel's parameter.
+const REMAP_SPANS: usize = 32;
+
+/// An ACIS pcurve on the kernel's parameter of its edge: for each kernel parameter `s`, the edge's
+/// point there, its ACIS parameter, and the ACIS pcurve's (u, v) at that; a cubic through those
+/// with their tangents (Hermite), a Bézier segment per span.
+fn remapped(given: &Curve2, param: &EdgeParam, edge: &solidcore_record::brep::Curve, [t0, t1]: [f64; 2]) -> Option<Curve2> {
+    let [a, b] = given.interval()?;
+    let [e0, e1] = param.range;
+    if !(t1 > t0 && (e1 - e0).abs() > 1e-300) {
+        return None;
+    }
+    // `near` and the returned value are the edge's ACIS parameter; the pcurve's is linear in it.
+    let f = |s: f64, near: f64| -> Option<(f64, [f64; 2])> {
+        let e = param.how.at(record_point(edge, s)?, near);
+        let tau = (a + (e - e0) / (e1 - e0) * (b - a)).clamp(a.min(b), a.max(b));
+        Some((e, uv_at(given, tau)?))
+    };
+    let h = (t1 - t0) / REMAP_SPANS as f64;
+    let eps = h * 1e-4;
+    let mut near = e0;
+    let mut nodes: Vec<([f64; 2], [f64; 2])> = Vec::with_capacity(REMAP_SPANS + 1);
+    for i in 0..=REMAP_SPANS {
+        let s = if i == REMAP_SPANS { t1 } else { t0 + h * i as f64 };
+        let (tau, p) = f(s, near)?;
+        near = tau;
+        let (lo, hi) = ((s - eps).max(t0), (s + eps).min(t1));
+        let (_, p0) = f(lo, tau)?;
+        let (_, p1) = f(hi, tau)?;
+        let ds = hi - lo;
+        nodes.push((p, [(p1[0] - p0[0]) / ds, (p1[1] - p0[1]) / ds]));
+    }
+    let mut points = Vec::with_capacity(3 * REMAP_SPANS + 1);
+    let mut knots = vec![t0; 4];
+    points.push(nodes.first()?.0);
+    for i in 0..REMAP_SPANS {
+        let ((p, dp), (q, dq)) = (*nodes.get(i)?, *nodes.get(i + 1)?);
+        points.push([p[0] + dp[0] * h / 3.0, p[1] + dp[1] * h / 3.0]);
+        points.push([q[0] - dq[0] * h / 3.0, q[1] - dq[1] * h / 3.0]);
+        points.push(q);
+        let s = if i + 1 == REMAP_SPANS { t1 } else { t0 + h * (i + 1) as f64 };
+        knots.extend(std::iter::repeat_n(s, if i + 1 == REMAP_SPANS { 4 } else { 3 }));
+    }
+    Some(Curve2::Spline { knots, points })
+}
+
 fn s(v: &str) -> Param {
     Param::Str(v.into())
 }
@@ -416,6 +711,60 @@ fn add(a: P3, b: P3, k: f64) -> P3 {
 
 fn cross(a: P3, b: P3) -> P3 {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+fn dot(a: P3, b: P3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// The angle (radians, in [0, 2π)) solidcore's STEP reader gives point `p` on the circle of
+/// `position` and `radius`, its numbers worked out as the reader works them: the axis and
+/// reference made unit, the reference made square to the axis, the point's angle about them.
+fn step_circle_angle(position: &Placement, radius: f64, p: P3) -> Option<f64> {
+    let step_unit = |v: P3| {
+        let m = dot(v, v).sqrt();
+        (m > 1e-12 && m.is_finite()).then(|| scale(v, 1.0 / m))
+    };
+    let z = step_unit(position.axis)?;
+    let r = step_unit(position.ref_direction)?;
+    let x = add(r, z, -dot(r, z));
+    let m = dot(x, x).sqrt();
+    if !(m > 1e-9 && m.is_finite()) {
+        return None;
+    }
+    let x = scale(x, 1.0 / m);
+    let y = cross(z, x);
+    let q = add(p, position.origin, -1.0);
+    let t = (dot(q, y) / radius).atan2(dot(q, x) / radius);
+    Some(if t < 0.0 { t + core::f64::consts::TAU } else { t })
+}
+
+/// A closed circle edge's circle with its reference through the edge's vertex `p`, nudged by
+/// roundings until solidcore's STEP reader puts the vertex exactly on angle 0. Without one that lands, the reference through the vertex.
+fn closed_circle_placement(position: &Placement, radius: f64, p: P3) -> Placement {
+    let Some(z) = unit(position.axis) else {
+        return *position;
+    };
+    let v = add(p, position.origin, -1.0);
+    let Some(x) = unit(add(v, z, -dot(v, z))) else {
+        return *position;
+    };
+    let side = cross(z, x);
+    // 0, or above it by less than half a rounding of a whole turn (so a turn on still ends at 2π).
+    let lands = |t: f64| (0.0..=f64::EPSILON).contains(&t);
+    for k in 0..=CLOSED_CIRCLE_TRIES {
+        for sign in [1.0, -1.0] {
+            let nudge = f64::from(k) * sign * f64::EPSILON;
+            let Some(ref_direction) = unit(add(x, side, nudge)) else {
+                continue;
+            };
+            let candidate = Placement { ref_direction, ..*position };
+            if step_circle_angle(&candidate, radius, p).is_some_and(lands) {
+                return candidate;
+            }
+        }
+    }
+    Placement { ref_direction: x, ..*position }
 }
 
 fn unit(a: P3) -> Option<P3> {
@@ -467,8 +816,52 @@ fn seam_loop(w: &mut Writer, surface: &Surface) -> Option<(u64, Vec<P3>)> {
     Some((loop_id, extent))
 }
 
+/// An edge's ACIS parameter: a line's range from its ends `ends` (the data's is in the decoder's
+/// lengths), a conic's angles as the data has them.
+fn edge_param_of(c: Option<&Curve>, e: &Value, ends: Option<&(P3, P3)>) -> Option<EdgeParam> {
+    let how = AcisParam::of(c?)?;
+    let range = match how {
+        AcisParam::Line { .. } => {
+            let (pa, pz) = ends?;
+            [how.at(*pa, 0.0), how.at(*pz, 0.0)]
+        }
+        AcisParam::Conic { .. } => {
+            let r = e.get("carrier").and_then(|c| c.get("param_range")).and_then(Value::as_array)?;
+            [r.first()?.as_f64()?, r.get(1)?.as_f64()?]
+        }
+    };
+    Some(EdgeParam { how, range })
+}
+
+/// An edge's curve, a closed circle edge's (`closed`, from vertex `start`) starting at its
+/// circle's angle 0: the kernel takes a full turn from the vertex's angle in [0, 2π), so a
+/// vertex a rounding below 0 would start it a turn later, and one a rounding above leaves a
+/// sliver it can't certify.
+fn closed_circle_edge(c: Option<Curve>, closed: bool, start: Option<P3>) -> Option<Curve> {
+    match (c, start) {
+        (Some(Curve::Circle { position, radius }), Some(p)) if closed => {
+            Some(Curve::Circle { position: closed_circle_placement(&position, radius, p), radius })
+        }
+        (c, _) => c,
+    }
+}
+
+/// A coedge's first ACIS pcurve, run its way (`reversed` against its edge).
+fn coedge_pcurve(co: &Value, pcurves: &HashMap<&str, &Value>, reversed: bool) -> Option<Curve2> {
+    let id = co.get("pcurves")?.as_array()?.first()?.get("pcurve")?.as_str()?;
+    pcurve(pcurves.get(id)?, reversed)
+}
+
+/// The box `lo`..`hi` grown to take in `p`.
+fn grow(lo: &mut [f64; 3], hi: &mut [f64; 3], p: P3) {
+    for k in 0..3 {
+        lo[k] = lo[k].min(p[k]);
+        hi[k] = hi[k].max(p[k]);
+    }
+}
+
 /// The decoded B-rep's solids as STEP text.
-fn step(v: &Value, mm: f64) -> Result<(String, usize)> {
+fn step(v: &Value, mm: f64) -> Result<(String, usize, Vec<FacePcurves>)> {
     let unplaced = Geometry::new(mm);
     let faces = by_id(v, "faces");
     if faces.len() > MAX_FACES {
@@ -485,6 +878,16 @@ fn step(v: &Value, mm: f64) -> Result<(String, usize)> {
         by_id(v, "shells"),
         by_id(v, "regions"),
     );
+    let pcurves = by_id(v, "pcurves");
+    // Procedural curves by their own id (the list holds [carrier id, curve] pairs).
+    let procedural: HashMap<&str, &Value> = v
+        .get("procedural_curves")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|x| x.get(1).or(Some(x))).filter_map(|x| Some((x.get("id")?.as_str()?, x))).collect())
+        .unwrap_or_default();
+    let mut face_pcurves: Vec<FacePcurves> = Vec::new();
+    let mut edge_ends: HashMap<&str, (P3, P3)> = HashMap::new();
+    let mut edge_param: HashMap<&str, Option<EdgeParam>> = HashMap::new();
     let mut w = Writer::new();
     let mut vertex_ids: HashMap<String, u64> = HashMap::new();
     let mut edge_ids: HashMap<&str, Option<u64>> = HashMap::new();
@@ -515,6 +918,8 @@ fn step(v: &Value, mm: f64) -> Result<(String, usize)> {
                     let surface_geometry = geometry.surface(surface)?;
                     let surface = GeomWriter::new(&mut w).surface(&surface_geometry);
                     let mut bounds = Vec::new();
+                    let spline = matches!(surface_geometry, Surface::BSpline(_));
+                    let mut given = FacePcurves { uses: Vec::new() };
                     for lp in ids(face.get("loops").and_then(|l| l.get("loops"))) {
                         let Some(lp) = loops.get(lp) else { continue };
                         let mut oriented = Vec::new();
@@ -544,11 +949,24 @@ fn step(v: &Value, mm: f64) -> Result<(String, usize)> {
                                         Ok(id)
                                     };
                                     let (a, z) = (vertex(e.get("start"))?, vertex(e.get("end"))?);
+                                    let at = |key: Option<&Value>| {
+                                        key.and_then(Value::as_str)
+                                            .and_then(|k| vertices.get(k))
+                                            .and_then(|x| x.get("point"))
+                                            .and_then(Value::as_str)
+                                            .and_then(|p| points.get(p))
+                                            .and_then(|p| geometry.point(p, "position"))
+                                    };
+                                    if let (Some(pa), Some(pz)) = (at(e.get("start")), at(e.get("end"))) {
+                                        edge_ends.insert(edge_key, (pa, pz));
+                                    }
                                     let carrier = e.get("carrier").and_then(|c| c.get("curve")).and_then(Value::as_str);
                                     let c = match carrier.and_then(|c| curves.get(c)) {
-                                        Some(c) => geometry.curve(c)?,
+                                        Some(c) => geometry.curve(c, &procedural)?,
                                         None => None,
                                     };
+                                    edge_param.insert(edge_key, edge_param_of(c.as_ref(), e, edge_ends.get(edge_key)));
+                                    let c = closed_circle_edge(c, a == z, edge_ends.get(edge_key).map(|(pa, _)| *pa));
                                     let made = match c {
                                         Some(c) => {
                                             let c = GeomWriter::new(&mut w).curve(&c);
@@ -567,6 +985,12 @@ fn step(v: &Value, mm: f64) -> Result<(String, usize)> {
                             match edge {
                                 Some(e) => {
                                     let forward = co.get("sense").and_then(Value::as_str) != Some("reversed");
+                                    if spline
+                                        && let Some(c2) = coedge_pcurve(co, &pcurves, !forward)
+                                        && let Some((pa, pz)) = edge_ends.get(edge_key)
+                                    {
+                                        given.uses.push((*pa, *pz, forward, c2, edge_param.get(edge_key).copied().flatten()));
+                                    }
                                     oriented.push(w.add_distinct("ORIENTED_EDGE", &[s(""), Param::Derived, Param::Derived, r(e), b(forward)]));
                                 }
                                 None if apex.is_none() => {
@@ -593,11 +1017,11 @@ fn step(v: &Value, mm: f64) -> Result<(String, usize)> {
                     {
                         bounds.push(w.add_distinct("FACE_BOUND", &[s(""), r(lp), b(true)]));
                         for p in extent {
-                            for k in 0..3 {
-                                lo[k] = lo[k].min(p[k]);
-                                hi[k] = hi[k].max(p[k]);
-                            }
+                            grow(&mut lo, &mut hi, p);
                         }
+                    }
+                    if !given.uses.is_empty() {
+                        face_pcurves.push(given);
                     }
                     let same_sense = face.get("sense").and_then(Value::as_str) != Some("reversed");
                     face_ids.push(w.add_distinct("ADVANCED_FACE", &[s(""), list(&bounds), r(surface), b(same_sense)]));
@@ -615,10 +1039,7 @@ fn step(v: &Value, mm: f64) -> Result<(String, usize)> {
                                     .and_then(|p| points.get(p))
                                     .and_then(|p| geometry.point(p, "position"));
                                 if let Some(p) = p {
-                                    for k in 0..3 {
-                                        lo[k] = lo[k].min(p[k]);
-                                        hi[k] = hi[k].max(p[k]);
-                                    }
+                                    grow(&mut lo, &mut hi, p);
                                 }
                             }
                         }
@@ -642,28 +1063,103 @@ fn step(v: &Value, mm: f64) -> Result<(String, usize)> {
             solids.push(solid);
         }
     }
-    Ok((w.file("acis", "AUTOMOTIVE_DESIGN"), solids.len()))
+    Ok((w.file("acis", "AUTOMOTIVE_DESIGN"), solids.len(), face_pcurves))
 }
 
-/// The kernel making the pcurves STEP and ACIS leave out: each use's curve projected onto its
-/// face's surface.
-struct Kernel;
+/// The kernel making the pcurves STEP leaves out: ACIS's own where the data has them (a face on
+/// a spline surface: the kernel has no exact pcurve of a spline edge there), else each use's
+/// curve projected onto its face's surface.
+struct Kernel {
+    faces: Vec<FacePcurves>,
+}
+
+fn near(a: P3, b: P3) -> bool {
+    let size = 1.0_f64.max(a.iter().chain(b.iter()).fold(0.0, |m, x| m.max(x.abs())));
+    (0..3).all(|k| (a[k] - b[k]).abs() <= 1e-7 * size)
+}
+
+impl Kernel {
+    /// The ACIS pcurve of each of the face's uses, from the face of the data that has one for
+    /// every use (matched by their edge's ends and direction; a loop the kernel turned round
+    /// matches with every direction flipped). Empty when no face of the data matches.
+    fn given(&self, face: &TrimFace<'_>) -> Vec<Vec<Option<(Curve2, Option<EdgeParam>)>>> {
+        let ends = |u: &solidcore_ops::pcurve::TrimUse| -> Option<(P3, P3)> {
+            let e = face.edges.get(usize::try_from(u.edge).ok()?)?;
+            let v = |i: u32| face.vertices.get(usize::try_from(i).ok()?).copied();
+            Some((v(e.vertices[0])?, v(e.vertices[1])?))
+        };
+        let mut best: (usize, Vec<Vec<Option<(Curve2, Option<EdgeParam>)>>>) = (0, Vec::new());
+        for f in &self.faces {
+            for flip in [false, true] {
+                let mut taken = vec![false; f.uses.len()];
+                let mut found = 0usize;
+                let picked: Vec<Vec<Option<(Curve2, Option<EdgeParam>)>>> = face
+                    .loops
+                    .iter()
+                    .map(|l| {
+                        l.iter()
+                            .map(|u| {
+                                let (a, z) = ends(u)?;
+                                let i = f.uses.iter().enumerate().position(|(i, (pa, pz, fw, _, _))| {
+                                    !taken.get(i).copied().unwrap_or(true) && near(*pa, a) && near(*pz, z) && (*fw != flip) == u.forward
+                                })?;
+                                if let Some(t) = taken.get_mut(i) {
+                                    *t = true;
+                                }
+                                found += 1;
+                                f.uses.get(i).map(|x| (x.3.clone(), x.4))
+                            })
+                            .collect()
+                    })
+                    .collect();
+                // Only a face whose every use matches: another face sharing a few of its edges
+                // is on another surface.
+                let total: usize = face.loops.iter().map(Vec::len).sum();
+                if found == total && found > best.0 {
+                    best = (found, picked);
+                }
+            }
+        }
+        best.1
+    }
+}
 
 impl Trims for Kernel {
     fn trims(&self, face: &TrimFace<'_>) -> std::result::Result<Vec<Vec<Curve2>>, String> {
         let surface = face.nurbs.unwrap_or(face.surface);
-        let mut loops = Vec::new();
-        for l in &face.loops {
-            let mut uses = Vec::new();
-            for u in l {
+        let given = if self.faces.is_empty() { Vec::new() } else { self.given(face) };
+        // ACIS's pcurves on the kernel's parameter of their edges, where that differs.
+        let mut own: Vec<Vec<Option<Curve2>>> = Vec::with_capacity(face.loops.len());
+        for (li, l) in face.loops.iter().enumerate() {
+            let mut row = Vec::with_capacity(l.len());
+            for (ui, u) in l.iter().enumerate() {
                 let e = face.edges.get(usize::try_from(u.edge).map_err(|e| e.to_string())?).ok_or("an edge out of range")?;
+                let pc = given.get(li).and_then(|g| g.get(ui)).and_then(Option::as_ref).and_then(|(c, how)| {
+                    let [a, b] = c.interval()?;
+                    let [t0, t1] = e.interval;
+                    let slack = 1e-9 * t0.abs().max(t1.abs()).max(1.0);
+                    if (a - t0).abs() <= slack && (b - t1).abs() <= slack {
+                        return Some(c.clone());
+                    }
+                    remapped(c, how.as_ref()?, e.nurbs.unwrap_or(e.curve), e.interval)
+                });
+                row.push(pc);
+            }
+            own.push(row);
+        }
+        let mut loops = Vec::new();
+        for (li, l) in face.loops.iter().enumerate() {
+            let mut uses = Vec::new();
+            for (ui, u) in l.iter().enumerate() {
+                let e = face.edges.get(usize::try_from(u.edge).map_err(|e| e.to_string())?).ok_or("an edge out of range")?;
+                let acis = own.get(li).and_then(|g| g.get(ui)).and_then(Option::as_ref);
                 uses.push(EdgeUse {
                     edge: u.edge,
                     curve: e.nurbs.unwrap_or(e.curve),
                     interval: e.interval,
                     forward: u.forward,
                     tolerance: e.tolerance,
-                    given: u.pcurve.as_ref(),
+                    given: u.pcurve.as_ref().or(acis),
                 });
             }
             loops.push(uses);
@@ -673,12 +1169,12 @@ impl Trims for Kernel {
 }
 
 fn to_bodies(v: &Value, mm: f64) -> Result<Vec<Body>> {
-    let (text, count) = step(v, mm)?;
+    let (text, count, faces) = step(v, mm)?;
     if count == 0 {
         return Err(err("the ACIS data holds no solid"));
     }
     let ex = solidcore_step::p21::parse(&text).map_err(|e| err(format!("the solid can't be read ({e})")))?;
-    let read = solidcore_step::topology::read_solids_with(&ex, &Kernel);
+    let read = solidcore_step::topology::read_solids_with(&ex, &Kernel { faces });
     if let Some(f) = read.failures.first() {
         return Err(err(format!("the solid can't be read ({})", f.message)));
     }
