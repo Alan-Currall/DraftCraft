@@ -92,7 +92,16 @@ fn autocad_free_form_solids_read() {
     let read = solids(&d);
     let kept = d.model.iter().filter(|e| matches!(&e.kind, EntityKind::Unknown(u) if u.dxf_type == "3DSOLID")).count();
     assert_eq!((read.len(), kept), (2, 0), "{name}: {:?}", d.read_notes);
-    assert!(read.iter().all(|(v, _)| v.is_finite() && *v > 0.0), "{name}: {read:?}");
+    // AutoCAD's MASSPROP of the two (acad-ref/mp-*.mpr): the loft 175685.1346 about z 36.2738,
+    // the sweep 44855.4624 about (150, 0, 40). The helix is read as a spline through it, a few
+    // parts in 10⁵ off.
+    let near = |(v, c): (f64, Vec3), want: f64, at: Vec3| (v - want).abs() <= 1e-3 * want && (c - at).len() <= 0.05;
+    let mut by_volume = read.clone();
+    by_volume.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let [sweep, loft] = by_volume.as_slice() else { panic!("{name}: {read:?}") };
+    assert!(near(*loft, 175_685.134_6, Vec3::new(0.0, 0.0, 36.2738)), "{name}: loft {loft:?}");
+    // The side face whole, not its inner half: a seam's two uses a period apart.
+    assert!(near(*sweep, 44_855.462_4, Vec3::new(150.0, 0.0, 40.0)), "{name}: sweep {sweep:?}");
 }
 
 /// A drawing with a box placed away from the origin and a box with a hole.

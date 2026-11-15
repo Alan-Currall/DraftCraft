@@ -1159,7 +1159,9 @@ impl Trims for Kernel {
                     interval: e.interval,
                     forward: u.forward,
                     tolerance: e.tolerance,
-                    given: u.pcurve.as_ref().or(acis),
+                    // ACIS's own first: a seam's two uses each have theirs, a period apart, where
+                    // the closed form the kernel works out once puts both on one side.
+                    given: acis.or(u.pcurve.as_ref()),
                 });
             }
             loops.push(uses);
