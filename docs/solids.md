@@ -6,7 +6,7 @@ This page has two parts:
 
 ## Status
 
-Updated 2026-11-14. Stages S0, S2, S3 and S6 are done, and S4 is done in part. S1, S5 and S7 are not started. Everything is behind the cargo feature `solids`. Without the feature, the build, the tests and the wasm check are exactly what they were.
+Updated 2026-11-15. Stages S0, S2, S3 and S6 are done, and S4 is done in part. S5 and S7 (the ACIS writer and reader) are done for solids bounded by planes, cylinders, cones, spheres and tori; free-form (NURBS) faces are read in part and not written yet (see The ACIS translator). S1 was not needed. Everything is behind the cargo feature `solids`. Without the feature, the build, the tests and the wasm check are exactly what they were.
 
 The kernel is [solidcore](https://github.com/tangency-labs/solidcore) (Apache-2.0): a pure-Rust B-rep modeller, a port of NVIDIA's SMLib, with no `unsafe`, building for wasm32. It replaced SolidCraft's truck-based kernel on 2026-11-14, at the owner's request.
 
@@ -18,7 +18,7 @@ cargo run --release -p draftcraft --features solids -- --sample
 
 The feature chain:
 - `draftcraft-engine/solids` turns on `draftcraft-solid/kernel`.
-- `draftcraft-io/solids` reopens saved solids.
+- `draftcraft-io/solids` opens AutoCAD's 3DSOLIDs as solids, saves solids as 3DSOLIDs, and reopens the interim form. `draftcraft-engine/solids` turns it on.
 - `draftcraft-ui-egui/solids` adds the 3D view and the ribbon tab.
 - `draftcraft-mcp/solids`.
 - The apps `draftcraft`, `draftcraft-cli` and `draftcraft-web` each have a `solids` feature that turns on the ones they use.
@@ -55,9 +55,23 @@ Bodies are kept near their own origin. A solid is made around its base point and
 
 All of them are `CommandSpec`s with tests (`crates/engine/src/cmd/solids/tests.rs`). They are reachable from the command line, scripts, the CLI, the control channel and MCP. They sit on the ribbon's *3D Modeling* tab, which has four panels: Modeling, Solid Editing, Section and View. Their labels are translated into Italian and Chinese.
 
+### The ACIS translator (S5 and S7)
+
+AutoCAD keeps a 3D solid as a 3DSOLID entity whose shape is ACIS data: SAT text in the entity's groups 1 and 3 (scrambled: each printable character `c` stored as `159 - c`) up to AutoCAD 2010, and SAB in the file's data store (ACDSDATA, one `ASM_Data` record per entity, keyed by its handle) from AutoCAD 2013. DraftCraft reads and writes both.
+
+- **Where:** `crates/solid/src/acis/` (`read`, `write_sat`, `write_sab`, `scramble`) does the ACIS work; `crates/io/src/solid_acis.rs` does the files (`adopt` on open, `for_saving` before the DXF and DWG writers).
+- **How:** both directions go through STEP, which describes a B-rep the way ACIS does and which solidcore reads and writes (`solidcore-step`).
+  - Reading, `cadmpeg-asm` (Apache-2.0, 0.6.12) frames and decodes the ACIS records, in any dialect AutoCAD writes (ACIS 400/700, ShapeManager 21500 and later; text or binary), into a neutral B-rep. `acis/read.rs` writes it as STEP topology, applies the body's transform, bounds whole spheres and tori with seams, and solidcore's STEP reader makes the body (pcurves, tolerances).
+  - Writing, solidcore writes the body as STEP and `acis/write.rs` turns the STEP entities into ACIS save format 700 records: body, lump, shell, face, loop, coedge, edge, vertex, point, `plane-`, `cone-` (cylinders too), `sphere-` and `torus-surface`, `straight-` and `ellipse-curve`. Faces that go all the way round lose their seams, as ACIS has them, and a cone's apex becomes a loop of one point edge (an edge with no curve that starts and ends at the tip): without it AutoCAD calls the cone an invalid solid with no volume. In a DWG 2000 to 2010 file the SAT lines end with a line feed alone, as in AutoCAD's own files. AutoCAD still has to be shown to open those DWG files: before this change it discarded every solid in them (error 75003), and AutoCAD's own SAT there is version 400 (2000) or 21500 (2010), not 700. `acis/model.rs` encodes the records as SAT or SAB.
+  - Units: AutoCAD takes ACIS coordinates as drawing units (the header says 1 mm per unit); so does DraftCraft, both ways.
+- **Opening:** every 3DSOLID whose data reads becomes a solid (placement identity); its data store record is dropped, since saving writes the solid's own. One that doesn't read is kept exactly as saved and written back, and the drawing's read notes say how many and why.
+- **Saving:** a solid becomes a 3DSOLID for the file's version: SAT 700 in groups 1/3 with `70 1` for 2000 to 2010 (plus `AcDb3dSolid` / `350 0` from 2007), and `290 1`, a GUID and a data store record of SAB for 2013 and later. The existing DXF and DWG writers write it like any 3DSOLID read from a file; in DXF it carries `100 AcDbEntity` before its layer, without which AutoCAD refuses the whole file. A solid the writer can't describe (free-form faces) keeps the interim form below, and the save says how many.
+- **Checked against AutoCAD:** `crates/io/tests/data/acad-solids/` holds drawings made in AutoCAD 2027 (box, cylinder, cone, sphere, torus, wedge; SUBTRACT, FILLETEDGE, CHAMFEREDGE; LOFT, SWEEP) as DXF 2000/2010/2018 and DWG 2000/2013/2018. The tests (`crates/io/src/solid_acis/tests.rs`) open them and compare each solid's volume and centroid with AutoCAD's MASSPROP (four decimals): all match. Solids saved in every version reopen with the same mass properties, and AutoCAD's solids saved again by DraftCraft stay solids.
+- **Not yet:** LOFT and SWEEP solids (NURBS faces) don't read yet: solidcore has no pcurves for a NURBS edge on a spline surface, and the ACIS file's own pcurves aren't passed to it yet; they stay as AutoCAD saved them. The writer has no `spline-surface` / `intcurve` records yet (W3). Several separate lumps in one 3DSOLID, REGION and BODY are kept as saved. Mirrored ACIS transforms are refused (kept as saved).
+
 ### Saving (S3, the interim form)
 
-In DXF and DWG, a solid is written as two things:
+Solids the ACIS writer can't describe yet, and every solid in a build without the `solids` feature in `draftcraft-io`, are saved in this form. In DXF and DWG, such a solid is written as two things:
 
 1. **A polyface mesh** (POLYLINE) that any program shows. The edges between triangles inside one face are invisible. A mesh past 32767 vertices or faces is split into several meshes.
 2. **An extension dictionary on the first mesh**, with the entry `DRAFTCRAFT_SOLID` pointing to an XRECORD. The XRECORD groups are:
@@ -76,7 +90,7 @@ On open, `draftcraft-io` with `solids` finds the marked meshes and turns them ba
 
 - **Without the feature:** the meshes stay meshes and the record is kept as foreign data, so a save writes it back.
 - **A damaged record:** the mesh is kept and nothing crashes (tested).
-- **The save tells the user:** it says on the command line (and in `solidsAsMeshes`) that other programs see solids as meshes.
+- **The save tells the user:** it says on the command line (and in `solidsAsMeshes`) how many solids other programs see as meshes: those not saved as 3DSOLIDs.
 - **Open time:** reopening a file saved with DraftCraft solids decodes each body once. That covers up to 100,000 solids (`MAX_REFRESHED`) and skips any look past 200,000 triangles. Files with no DraftCraft solids never call the kernel.
 
 S1 (native DWG items) was not needed for this. The DWG writer already writes POLYLINE, DICTIONARY and XRECORD with binary 310 groups. The direct DWG reader keeps the extension dictionaries and objects, and DWG 2013/2018 solids from other programs already keep their data-store geometry (`e284f21e`).
@@ -179,11 +193,10 @@ The three checks from the advisory's section 5:
   - What solidcore brings: primitives, extrude (with draft), revolve, exact booleans, fillets and chamfers (`blend_ordered`), shell, slicing, exact mass properties with the inertia tensor (so MASSPROP now reports moments), point classification, contact tests, a native `.smb` format and a display mesher.
   - What it doesn't have: a hidden-line module. FLATSHOT's projection is DraftCraft's own (see S6).
   - Its positive shell thickness grows the body outward; the facade passes it negated, so a shell's walls go inside as in AutoCAD.
-- **The ACIS record layer** (owner's call 3), for when S5 and S7 start:
-  - **cadmpeg-asm** (Apache-2.0, "Parse and write Autodesk Shape Manager record streams", v0.6.12) is the candidate. Its licence is compatible, so it can be a dependency.
-  - **acadrust** (MPL-2.0) is out. DraftCraft no longer depends on it: the DWG writer replaced it. Bringing back an MPL dependency for one layer isn't worth it.
-  - Writing our own `draftcraft-acis` stays the fallback if cadmpeg-asm doesn't cover ACIS 700 writing.
-  - Nothing ACIS is in this branch. S5 and S7 were out of scope. solidcore's portable B-rep record (`solidcore-record`: faces, surfaces and edges with their kinds) is what an ACIS writer would read.
+- **The ACIS record layer** (owner's call 3):
+  - **cadmpeg-asm** (Apache-2.0, v0.6.12) reads ACIS: it frames every dialect and decodes the records. It is a dependency of `draftcraft-solid` under `kernel`, like solidcore (`cargo xtask layers` keeps both kernel families, `solidcore*` and `cadmpeg*`, inside that crate).
+  - Writing is DraftCraft's own (`crates/solid/src/acis/write.rs`, `model.rs`): save format 700 from solidcore's STEP entities, from Spatial's published record layouts as cadmpeg-asm's grammar reads them back (the tests read every written file back through it).
+  - **acadrust** (MPL-2.0) is out. DraftCraft no longer depends on it: the DWG writer replaced it.
 - **The interim DWG/DXF form** is mesh plus exact body (owner's call 4), as described under Saving. The body bytes are solidcore's `.smb`; the XRECORD layout is unchanged.
 
 ### Open questions
@@ -194,10 +207,9 @@ The three checks from the advisory's section 5:
 
 ### Next steps
 
-1. S4 remainder: a view per viewport, snaps in 3D, face and edge picking, a GPU path, and measuring the 10,000-face acceptance.
-2. S5, the ACIS writer: W1, then W2, then W3, with cadmpeg-asm as the record layer, reading solidcore's portable record.
+1. ACIS: NURBS faces both ways (the reader passing ACIS's own pcurves to solidcore; the writer's `spline-surface` and `intcurve` records, W3), several lumps per 3DSOLID, REGION and BODY.
+2. S4 remainder: a view per viewport, snaps in 3D, face and edge picking, a GPU path, and measuring the 10,000-face acceptance.
 3. PRESSPULL, SWEEP, LOFT, THICKEN; STEP export.
-4. S7, the ACIS reader.
 
 ---
 

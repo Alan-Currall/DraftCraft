@@ -122,12 +122,16 @@ pub fn write(d: &Drawing) -> String {
 
 /// The drawing's DXF tags, declaring `version` in `$ACADVER`.
 pub fn tags(d: &Drawing, version: Version) -> Vec<Tag> {
+    #[cfg(feature = "solids")]
+    let d = &*crate::solid_acis::for_saving(d, version);
     tags_for(d, version, version, version < Version::R2004)
 }
 
 /// The drawing's records for DraftCraft's own DWG writer ([`crate::dwg::write`]), which encodes
 /// each as the DWG object of the same meaning: the entity types are the DWG version's.
 pub(crate) fn dwg_records(d: &Drawing, dwg: Version) -> Vec<Tag> {
+    #[cfg(feature = "solids")]
+    let d = &*crate::solid_acis::for_saving(d, dwg);
     tags_for(d, Version::R2000, dwg, false)
 }
 

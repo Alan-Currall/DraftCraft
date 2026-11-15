@@ -76,7 +76,7 @@ pub const UI_CRATES: &[&str] = &["craft-ui", "egui", "eframe", "egui-wgpu", "wgp
 
 /// The solid modelling kernel's crates (docs/solids.md): only `draftcraft-solid` may depend on
 /// them, so the kernel can be pinned, patched or replaced in one place.
-pub const KERNEL_CRATES: &[&str] = &["solidcore*"];
+pub const KERNEL_CRATES: &[&str] = &["solidcore*", "cadmpeg*"];
 
 /// The one crate allowed to depend on [`KERNEL_CRATES`].
 pub const KERNEL_FACADE: &str = "solid";

@@ -20,7 +20,7 @@ tests.
 
 Builds with the optional `solids` feature (3D solids, docs/solids.md) link solidcore, a pure-Rust
 B-rep modeller (the crates solidcore, solidcore-ops, solidcore-record, solidcore-convert and
-solidcore-tess of https://github.com/tangency-labs/solidcore, pinned to commit
+solidcore-tess and solidcore-step of https://github.com/tangency-labs/solidcore, pinned to commit
 ce5c6e95ff4ec28e673f287b8291dc0cd38b1901), used unmodified, under the Apache License, Version 2.0.
 Builds without the feature contain none of it. solidcore's notice reads, in part:
 
@@ -38,6 +38,10 @@ Builds without the feature contain none of it. solidcore's notice reads, in part
   SPDX-License-Identifier: Apache-2.0
 
 The full notice is solidcore's NOTICE file at the pinned commit.
+
+The same builds read ACIS data (AutoCAD's 3D solids) with cadmpeg (the crates cadmpeg-asm,
+cadmpeg-core and cadmpeg-ir 0.6.12 of https://github.com/cadmpeg/cadmpeg), used unmodified, under
+the Apache License, Version 2.0.
 
 
 DraftCraft's icons, drafting font, hatch patterns and linetypes are drawn or defined in code.

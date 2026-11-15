@@ -129,8 +129,8 @@ pub(crate) fn guid(text: &str) -> (u32, u16, u16, [u8; 8]) {
 }
 
 /// The SAT text of the modeler groups (format 1): each group 1 a line, continued by groups 3,
-/// with DXF's caret escape undone, each line ended by CR LF as AutoCAD stores it, and without
-/// the end-of-data line DWG's sized blocks have no use for. `None` when the groups hold none.
+/// with DXF's caret escape undone, each line ended by a line feed alone and without the
+/// end-of-data line, as AutoCAD 2000 and 2010 store it. `None` when the groups hold none.
 fn sat_text(g: &Groups<'_>) -> Option<Vec<u8>> {
     if g.i(70) != 1 && !g.0.iter().any(|t| t.code == 1) {
         return None;
@@ -149,11 +149,11 @@ fn sat_text(g: &Groups<'_>) -> Option<Vec<u8>> {
     if lines.is_empty() {
         return None;
     }
-    let mut out = Vec::with_capacity(lines.iter().map(|l| l.len() + 2).sum());
+    let mut out = Vec::with_capacity(lines.iter().map(|l| l.len() + 1).sum());
     for l in &lines {
         // The text is one byte per character, as the reader takes it.
         out.extend(l.chars().map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')));
-        out.extend_from_slice(b"\r\n");
+        out.push(b'\n');
     }
     Some(out)
 }
@@ -163,4 +163,28 @@ fn sat_text(g: &Groups<'_>) -> Option<Vec<u8>> {
 fn is_end(line: &str) -> bool {
     let plain: String = line.chars().map(|c| if ('!'..='~').contains(&c) { char::from(159 - c as u8) } else { c }).collect();
     [line, plain.as_str()].iter().any(|l| l.starts_with("End-of-ACIS-data") || l.starts_with("End-of-ASM-data"))
+}
+
+#[cfg(test)]
+mod tests {
+    use draftcraft_dxf::Tag;
+
+    use super::*;
+
+    /// AutoCAD 2000 and 2010 keep a solid's SAT text with a line feed alone after each line, and
+    /// no end-of-data line; with CR LF, AutoCAD 2027 discards every solid of the file.
+    #[test]
+    fn sat_text_lines_end_with_a_line_feed_alone() {
+        let tags = [
+            Tag::s(100, "AcDbModelerGeometry"),
+            Tag::i(70, 1),
+            Tag::s(1, "hoo o n o "),
+            Tag::s(1, "=0;& {rn "),
+            Tag::s(3, "rn {rn |"),
+            Tag::s(1, "Z1;r09r^ \\VLr;>+>"),
+        ];
+        let sat = sat_text(&Groups(&tags)).expect("SAT text");
+        assert_eq!(sat, b"hoo o n o \n=0;& {rn rn {rn |\n".to_vec());
+        assert!(!sat.contains(&b'\r'));
+    }
 }

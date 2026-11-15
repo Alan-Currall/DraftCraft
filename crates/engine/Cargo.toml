@@ -31,7 +31,7 @@ rstar = { version = "0.13", default-features = false }
 [features]
 # 3D solids: BOX, EXTRUDE, UNION of solids, FLATSHOT and the rest (docs/solids.md). Off, the
 # engine is exactly as without solids.
-solids = ["dep:draftcraft-solid", "draftcraft-solid/kernel"]
+solids = ["dep:draftcraft-solid", "draftcraft-solid/kernel", "draftcraft-io/solids"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

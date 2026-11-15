@@ -10,6 +10,8 @@
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "kernel")]
+pub mod acis;
+#[cfg(feature = "kernel")]
 mod body;
 #[cfg(feature = "kernel")]
 mod views;

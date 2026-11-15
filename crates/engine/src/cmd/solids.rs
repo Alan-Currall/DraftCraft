@@ -63,6 +63,14 @@ pub(crate) fn refresh_looks(d: &mut draftcraft_doc::Drawing) {
     }
 }
 
+/// Whether a solid is saved as AutoCAD's own 3DSOLID (its body written as ACIS); the others are
+/// saved as meshes with the exact body attached (docs/solids.md, "The ACIS translator").
+pub(crate) fn saves_as_acis(so: &Solid3d) -> bool {
+    let Ok(body) = Body::decode(&so.body) else { return false };
+    let body = if is_identity(&so.placement) { Ok(body) } else { body.transformed(&so.placement) };
+    body.is_ok_and(|b| solid::acis::write_sat(&b).is_ok())
+}
+
 /// The solids commands.
 pub fn specs() -> Vec<CommandSpec> {
     let mut v = prims::specs();

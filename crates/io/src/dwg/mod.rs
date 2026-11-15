@@ -11,7 +11,7 @@
 
 mod blocks;
 mod carry;
-mod data_store;
+pub(crate) mod data_store;
 mod dynblock;
 mod entities;
 mod header;

@@ -301,6 +301,7 @@ mod recover {
 
     /// Turn the meshes DraftCraft saved for its solids back into solids, everywhere in the drawing.
     pub(crate) fn recover(d: &mut Drawing) {
+        crate::solid_acis::adopt(d);
         if d.foreign.entities.is_empty() {
             return;
         }
