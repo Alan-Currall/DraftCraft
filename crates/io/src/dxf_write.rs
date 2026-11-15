@@ -127,6 +127,13 @@ pub fn tags(d: &Drawing, version: Version) -> Vec<Tag> {
     tags_for(d, version, version, version < Version::R2004)
 }
 
+/// The drawing as R2000 ASCII DXF with every solid in its interim file form (the meshes and the
+/// record), as a solid the ACIS writer can't write is saved.
+#[cfg(all(test, feature = "solids"))]
+pub(crate) fn write_interim(d: &Drawing) -> String {
+    draftcraft_dxf::write_ascii(&tags_for(d, Version::R2000, Version::R2000, true))
+}
+
 /// The drawing's records for DraftCraft's own DWG writer ([`crate::dwg::write`]), which encodes
 /// each as the DWG object of the same meaning: the entity types are the DWG version's.
 pub(crate) fn dwg_records(d: &Drawing, dwg: Version) -> Vec<Tag> {

@@ -168,6 +168,92 @@ fn slice_keeps_both_or_one_side() {
 }
 
 #[test]
+fn slice_xy_takes_the_typed_height_and_side() {
+    // Review of PR 20: the XY plane was always at Z=0 and the upper part always kept.
+    let run = |side: &str| {
+        let mut s = Session::new();
+        let a = h(&s.execute("box", &json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap());
+        s.set_selection(Vec::new());
+        s.cmdline("slice").unwrap();
+        s.cmdline("10,5").unwrap();
+        s.cmdline("").unwrap();
+        s.cmdline("xy").unwrap();
+        s.cmdline("0,0,3").unwrap();
+        s.cmdline(side).unwrap();
+        (s.running.is_some(), solid(&s, &a).volume, s, a)
+    };
+    // Below the plane at Z=3: the lower part.
+    let (_, v, ..) = run("1,1,1");
+    assert!(near(v, 300.0, 1e-6), "{v}");
+    // Above it.
+    let (_, v, ..) = run("1,1,9");
+    assert!(near(v, 700.0, 1e-6), "{v}");
+    // A point picked in plan (Z=0) is below.
+    let (_, v, ..) = run("1,1");
+    assert!(near(v, 300.0, 1e-6), "{v}");
+    // On the plane: asked again, nothing sliced yet.
+    let (running, v, mut s, a) = run("2,2,3");
+    assert!(running && near(v, 1000.0, 1e-6), "{v}");
+    // `@` from there: 4 above it.
+    s.cmdline("@0,0,4").unwrap();
+    assert!(s.running.is_none());
+    assert!(near(solid(&s, &a).volume, 700.0, 1e-6));
+    // By JSON a side point on the plane is refused.
+    let mut s = Session::new();
+    let a = h(&s.execute("box", &json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap());
+    assert!(s.execute("slice", &json!({"handles": [a], "origin": [0, 0, 3], "normal": [0, 0, 1], "keep": [5, 5, 3]})).is_err());
+    assert!(near(solid(&s, &a).volume, 1000.0, 1e-9));
+}
+
+#[test]
+fn edges_and_faces_are_picked_along_the_view() {
+    // Review of PR 20: picking used the plan projection, so the top and bottom edges of a box
+    // tied (the first won), faces were always the topmost, and 3D clicks went to Z=0.
+    let mut s = Session::new();
+    let a = h(&s.execute("box", &json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap());
+    let hd = s.doc().unwrap().model.iter().find(|e| e.handle.hex() == a).unwrap().handle;
+    let so = solid(&s, &a);
+    let at = draftcraft_geom::Vec2::new(10.0, 5.0).to3(0.0);
+    // From above, the top edge; from below, the bottom one.
+    let (_, q) = super::pick_edge(&s, at, super::DOWN, &[]).unwrap().unwrap();
+    assert!(near(q.z, 10.0, 1e-9), "{q:?}");
+    let (_, q) = super::pick_edge(&s, at, Vec3::Z, &[hd]).unwrap().unwrap();
+    assert!(near(q.z, 0.0, 1e-9), "{q:?}");
+    let mid = draftcraft_geom::Vec2::new(5.0, 5.0).to3(0.0);
+    assert!(near(super::pick_face(&so, mid, super::DOWN).unwrap().z, 10.0, 1e-9));
+    assert!(near(super::pick_face(&so, mid, Vec3::Z).unwrap().z, 0.0, 1e-9));
+    // Looking along +Y (the front view), the face at Y=0.
+    let q = super::pick_face(&so, Vec3::new(5.0, -50.0, 5.0), Vec3::Y).unwrap();
+    assert!(near(q.y, 0.0, 1e-9), "{q:?}");
+    // In a view from below, a click on the edge fillets the bottom edge.
+    let v = crate::view3d::View3d::new(Vec3::Z, draftcraft_geom::Vec2::new(5.0, 5.0), 40.0, crate::view3d::VisualStyle::Wireframe).unwrap();
+    s.set_view3d(Some(v));
+    let (at, dir) = super::sight(&s, draftcraft_geom::Vec2::new(10.0, 5.0));
+    assert_eq!(dir, Vec3::Z);
+    let (_, q) = super::pick_edge(&s, at, dir, &[]).unwrap().unwrap();
+    assert!(near(q.z, 0.0, 1e-9), "{q:?}");
+}
+
+#[test]
+fn a_failing_command_leaves_nothing_half_done() {
+    // Review of PR 20: SUBTRACT of solids and regions changed the solids, then failed on the
+    // regions, and the drawing kept the half-done work.
+    let mut s = Session::new();
+    let a = h(&s.execute("box", &json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap());
+    let b = h(&s.execute("box", &json!({"corner1": [5, 5], "corner2": [15, 15], "height": 10})).unwrap());
+    let rect = s.execute("rectang", &json!({"p1": [30, 0], "p2": [40, 10]})).unwrap();
+    let r = s.execute("region", &json!({"handles": [rect["handle"]]})).unwrap();
+    let reg = r["handles"].get(0).cloned().unwrap_or_else(|| r["handle"].clone());
+    let before = s.doc().unwrap().clone();
+    // The region taken from itself fails after the solids were done.
+    assert!(s.execute("subtract", &json!({"from": [a, reg], "remove": [b, reg]})).is_err());
+    let after = s.doc().unwrap();
+    assert!(near(solid(&s, &a).volume, 1000.0, 1e-9));
+    assert!(near(solid(&s, &b).volume, 1000.0, 1e-9), "the removed solid is still there");
+    assert_eq!(after.model.iter().count(), before.model.iter().count());
+}
+
+#[test]
 fn fillet_chamfer_and_shell() {
     let mut s = Session::new();
     let a = h(&s.execute("box", &json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap());
@@ -195,6 +281,26 @@ fn interfere_reports_and_creates() {
     assert_eq!(count(&s, "3D Solid"), 2);
     s.execute("interfere", &json!({"first": [a], "second": [b], "create": true})).unwrap();
     assert_eq!(count(&s, "3D Solid"), 3);
+}
+
+#[test]
+fn interfere_skips_solids_far_apart_and_scales_volumes() {
+    // Review of PR 20: every pair went through the kernel. Boxes far apart are ruled out first;
+    // a scaled solid's interference is in drawing units.
+    let mut s = Session::new();
+    let mut hs = Vec::new();
+    for i in 0..30 {
+        let x = f64::from(i) * 100.0;
+        hs.push(h(&s.execute("box", &json!({"corner1": [x, 0], "corner2": [x + 2.0, 2], "height": 2})).unwrap()));
+    }
+    let r = s.execute("interfere", &json!({"first": hs})).unwrap();
+    assert!(r["pairs"].as_array().unwrap().is_empty());
+    let a = h(&s.execute("box", &json!({"corner1": [0, 50], "corner2": [2, 52], "height": 2})).unwrap());
+    let b = h(&s.execute("box", &json!({"corner1": [1, 51], "corner2": [3, 53], "height": 2})).unwrap());
+    s.execute("scale", &json!({"handles": [a, b], "base": [0, 50], "factor": 2})).unwrap();
+    let r = s.execute("interfere", &json!({"first": [a, b]})).unwrap();
+    // Twice as large each way: 2 × 2 × 2 × 2.
+    assert!(near(r["pairs"][0]["volume"].as_f64().unwrap(), 16.0, 1e-9), "{r}");
 }
 
 #[test]
@@ -248,30 +354,6 @@ fn move_rotate_mirror_scale_keep_the_body() {
     assert!(near(after.volume, 6.0, 1e-9));
     let w = after.world(Vec3::new(0.5, 1.0, 0.0));
     assert!(near(w.x, -100.5, 1e-9) && near(w.y, 51.0, 1e-9), "{w:?}");
-}
-
-#[test]
-fn an_opened_solid_gets_the_look_of_its_body() {
-    let mut s = Session::new();
-    let a = h(&s.execute("box", &json!({"corner1": [0, 0], "corner2": [1, 1], "height": 1})).unwrap());
-    let mut d = s.doc().unwrap().clone();
-    let good = solid(&s, &a).look.clone();
-    let hd = d.model.iter().find(|e| e.handle.hex() == a).unwrap().handle;
-    d.model.modify(hd, |e| {
-        if let EntityKind::Solid3d(so) = &mut e.kind {
-            so.look = std::sync::Arc::new(draftcraft_doc::SolidLook::default());
-        }
-    });
-    super::refresh_looks(&mut d);
-    let EntityKind::Solid3d(so) = &d.model.get(hd).unwrap().kind else { panic!() };
-    assert_eq!(so.look, good);
-    // A body that can't be read keeps what it has.
-    d.model.modify(hd, |e| {
-        if let EntityKind::Solid3d(so) = &mut e.kind {
-            so.body = std::sync::Arc::new(vec![1, 2, 3]);
-        }
-    });
-    super::refresh_looks(&mut d);
 }
 
 #[test]

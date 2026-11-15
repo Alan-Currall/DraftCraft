@@ -113,6 +113,25 @@ Each one is a `CommandSpec` in `crates/engine/src/cmd/solids/*`, with tests, a r
 
 ---
 
+## 2b. Review of PR 20 (WithShalom, 14 points)
+
+All fourteen are fixed, each with a regression test:
+1–2. Interim file form: each mesh's fingerprint in the record; only unchanged meshes come back, parts found by fingerprint, never by position (`crates/io/src/solid_file.rs`).
+3. CI: a second job, `gate-solids`, runs `cargo xtask ci --solids`.
+4. Mirrored solids: triangles wound back in the 3D view and in the meshes written to files.
+5. SLICE/SECTION: a typed `x,y,z` keeps its Z (`Session::point_z`); a side point on the plane is refused.
+6. FILLETEDGE/CHAMFEREDGE/Shell pick along the line of sight of the current view (`sight`, `pick_edge`, `pick_face`).
+7. Solids inside blocks are drawn in 3D.
+8. Multi-object commands are all or nothing (`Session::all_or_nothing`).
+9. A saved workspace named "3D Modeling" is no longer shadowed by the built-in one.
+10. INTERFERE: box prefilter, bodies read once, no look unless the solid is created.
+11. Opening no longer re-tessellates every solid: only those recovered from their meshes are drawn from their bodies.
+12. The 3D view keeps what it painted until something changes; off-screen faces are left out of the hidden-line grid.
+13. CHANGELOG lines for the workspace menus.
+14. `draftcraft-web` has no `solids` feature; the workspace menus show 3D Modeling greyed out where solids are off.
+
+---
+
 ## 3. Working in 3D (interaction)
 
 - **3D UCS:** UCS Face, Object, 3point, ZAxis, rotation about X, Y and Z. The **dynamic UCS** (DUCS) follows the face under the cursor while a command runs.

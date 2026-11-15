@@ -95,6 +95,22 @@ impl Solid3d {
         self.placement = m.mul(&self.placement);
     }
 
+    /// Whether the placement mirrors the body (a negative determinant): its triangles then wind
+    /// the other way round in the drawing, and a mesh or a shaded view made from them must swap
+    /// two corners of each to keep the faces' outsides outside.
+    pub fn mirrored(&self) -> bool {
+        let m = &self.placement.m;
+        let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        det < 0.0
+    }
+
+    /// A triangle of the look in drawing coordinates, wound so that it faces out of the solid.
+    pub fn world_triangle(&self, local: [Vec3; 3]) -> [Vec3; 3] {
+        let [a, b, c] = local.map(|p| self.world(p));
+        if self.mirrored() { [a, c, b] } else { [a, b, c] }
+    }
+
     /// Whether the placement is something a drawing file can store and the kernel can apply:
     /// finite, affine and not flattening the body.
     pub fn placement_ok(&self) -> bool {

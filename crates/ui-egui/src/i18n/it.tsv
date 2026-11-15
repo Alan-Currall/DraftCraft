@@ -1662,6 +1662,7 @@ menu	Workspaces	Aree di lavoro
 	Import Attributes	Importa attributi
 	Text, tab-delimited (TXT)	Testo delimitato da tabulazioni (TXT)
 # 3D solids (docs/solids.md).
+	3D solids are not available in this build.	I solidi 3D non sono disponibili in questa versione.
 	3D Modeling	Modellazione 3D
 	3D Solid	Solido 3D
 	Section	Sezione

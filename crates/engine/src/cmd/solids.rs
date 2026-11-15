@@ -23,46 +23,6 @@ mod views;
 
 pub(crate) use edit::{try_boolean, try_massprop, try_subtract};
 
-/// Most solids whose look an opened drawing gets from their bodies; the others keep the look of
-/// their saved meshes.
-const MAX_REFRESHED: usize = 100_000;
-
-/// Give every solid of `d` the look its exact body has (a solid read from a file has the look of
-/// the mesh it was saved with). A body that can't be read keeps the mesh's look.
-pub(crate) fn refresh_looks(d: &mut draftcraft_doc::Drawing) {
-    let mut n = 0usize;
-    let mut fix = |st: &mut draftcraft_doc::EntityStore| {
-        let hs: Vec<Handle> = st.iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_))).map(|e| e.handle).collect();
-        for h in hs {
-            if n >= MAX_REFRESHED {
-                return;
-            }
-            n += 1;
-            let Some(EntityKind::Solid3d(so)) = st.get(h).map(|e| &e.kind) else { continue };
-            let Ok(body) = Body::decode(&so.body) else { continue };
-            let Ok(look) = body.display(0.0) else { continue };
-            if look.triangles.len() > MAX_LOOK_TRIANGLES {
-                continue;
-            }
-            let look = SolidLook { wires: look.wires, positions: look.positions, triangles: look.triangles, tri_face: look.tri_face };
-            st.modify(h, |e| {
-                if let EntityKind::Solid3d(so) = &mut e.kind {
-                    so.look = std::sync::Arc::new(look);
-                }
-            });
-        }
-    };
-    fix(&mut d.model);
-    for l in &mut d.layouts {
-        fix(&mut l.entities);
-    }
-    for b in d.blocks.values_mut() {
-        if b.entities.iter().any(|e| matches!(e.kind, EntityKind::Solid3d(_))) {
-            fix(&mut std::sync::Arc::make_mut(b).entities);
-        }
-    }
-}
-
 /// Whether a solid is saved as AutoCAD's own 3DSOLID (its body written as ACIS); the others are
 /// saved as meshes with the exact body attached (docs/solids.md, "The ACIS translator").
 pub(crate) fn saves_as_acis(so: &Solid3d) -> bool {
@@ -142,7 +102,7 @@ pub(crate) fn inverse(m: &Mat4) -> Option<Mat4> {
     out.m.iter().flatten().all(|v| v.is_finite()).then_some(out)
 }
 
-fn det3(m: &Mat4) -> f64 {
+pub(crate) fn det3(m: &Mat4) -> f64 {
     let a = &m.m;
     a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
         + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
@@ -222,11 +182,38 @@ pub(crate) fn added(h: Handle) -> Result<Value> {
     Ok(json!({ "handle": h.hex() }))
 }
 
-/// The solid whose edges (seen from above) pass nearest to `p`, among `hs` (all solids when
-/// empty), and the 3D point on that edge nearest to `p` in plan, in drawing coordinates.
-pub(crate) fn pick_edge(s: &Session, p: Vec2, hs: &[Handle]) -> Result<Option<(Handle, Vec3)>> {
+/// Looking straight down: the line of sight of the plan view.
+pub(crate) const DOWN: Vec3 = Vec3 { x: 0.0, y: 0.0, z: -1.0 };
+
+/// The line of sight through a point given at a prompt: that point (in the XY plane, or at the
+/// typed Z) and the current view's direction, straight down in plan. In a 3D view a click is
+/// the point of the XY plane seen there, so the line passes through what was clicked.
+pub(crate) fn sight(s: &Session, p: Vec2) -> (Vec3, Vec3) {
+    let dir = s.view3d().map_or(DOWN, |v| v.dir);
+    (p.to3(s.point_z.unwrap_or(0.0)), dir)
+}
+
+/// Screen right and up for a view along `dir` (as [`crate::view3d::View3d::axes`]).
+fn view_axes(dir: Vec3) -> (Vec3, Vec3) {
+    let mut up = Vec3::Z - dir * dir.dot(Vec3::Z);
+    if up.len() < 1e-9 {
+        up = Vec3::Y;
+    }
+    let x = dir.cross(up).normalized();
+    (x, x.cross(dir).normalized())
+}
+
+/// The solid edge seen nearest the line of sight through `at` along `dir` (an edge in front
+/// winning over one behind it at the same place), among `hs` (all solids when empty): the
+/// solid, and the 3D point of the edge seen there, in drawing coordinates.
+pub(crate) fn pick_edge(s: &Session, at: Vec3, dir: Vec3, hs: &[Handle]) -> Result<Option<(Handle, Vec3)>> {
     let d = s.doc()?;
-    let mut best: Option<(f64, Handle, Vec3)> = None;
+    let dir = dir.normalized();
+    let (x, y) = view_axes(dir);
+    let on = |q: Vec3| Vec2::new(q.dot(x), q.dot(y));
+    let p = on(at);
+    // (distance on screen, depth, solid, point)
+    let mut best: Option<(f64, f64, Handle, Vec3)> = None;
     let Some(store) = d.space(&s.space()) else { return Ok(None) };
     for e in store.iter() {
         let EntityKind::Solid3d(so) = &e.kind else { continue };
@@ -236,28 +223,40 @@ pub(crate) fn pick_edge(s: &Session, p: Vec2, hs: &[Handle]) -> Result<Option<(H
         for w in so.world_wires() {
             for seg in w.windows(2) {
                 let (Some(a), Some(b)) = (seg.first(), seg.get(1)) else { continue };
-                let (a2, b2) = (a.xy(), b.xy());
+                let (a2, b2) = (on(*a), on(*b));
                 let ab = b2 - a2;
                 let t = if ab.dot(ab) > 0.0 { ((p - a2).dot(ab) / ab.dot(ab)).clamp(0.0, 1.0) } else { 0.0 };
-                let q = a2 + ab * t;
-                let dist = q.dist(p);
-                if best.is_none_or(|(bd, ..)| dist < bd) {
-                    best = Some((dist, e.handle, *a + (*b - *a) * t));
+                let dist = (a2 + ab * t).dist(p);
+                let q = *a + (*b - *a) * t;
+                let depth = q.dot(dir);
+                if !(dist.is_finite() && depth.is_finite()) {
+                    continue;
+                }
+                let better = best.is_none_or(|(bd, bz, ..)| {
+                    let tol = 1e-7 * (1.0 + bd.abs());
+                    dist < bd - tol || (dist <= bd + tol && depth < bz)
+                });
+                if better {
+                    best = Some((dist, depth, e.handle, q));
                 }
             }
         }
     }
-    Ok(best.map(|(_, h, q)| (h, q)))
+    Ok(best.map(|(_, _, h, q)| (h, q)))
 }
 
-/// The point of solid `so`'s faces seen from above at `p` (the topmost face under it), in
-/// drawing coordinates.
-pub(crate) fn pick_face(so: &Solid3d, p: Vec2) -> Option<Vec3> {
-    let mut best: Option<Vec3> = None;
+/// The point where the line of sight through `at` along `dir` first meets solid `so`'s faces
+/// (the face nearest the viewer), in drawing coordinates.
+pub(crate) fn pick_face(so: &Solid3d, at: Vec3, dir: Vec3) -> Option<Vec3> {
+    let dir = dir.normalized();
+    let (x, y) = view_axes(dir);
+    let on = |q: Vec3| Vec2::new(q.dot(x), q.dot(y));
+    let p = on(at);
+    let mut best: Option<(f64, Vec3)> = None;
     for t in &so.look.triangles {
-        let Some([a, b, c]) = so.look.triangle(t) else { continue };
-        let (a, b, c) = (so.world(a), so.world(b), so.world(c));
-        let (a2, b2, c2) = (a.xy(), b.xy(), c.xy());
+        let Some(local) = so.look.triangle(t) else { continue };
+        let [a, b, c] = local.map(|q| so.world(q));
+        let (a2, b2, c2) = (on(a), on(b), on(c));
         let den = (b2 - a2).cross(c2 - a2);
         if den.abs() < 1e-300 {
             continue;
@@ -268,9 +267,10 @@ pub(crate) fn pick_face(so: &Solid3d, p: Vec2) -> Option<Vec3> {
             continue;
         }
         let q = a + (b - a) * u + (c - a) * v;
-        if best.is_none_or(|bq| q.z > bq.z) {
-            best = Some(q);
+        let depth = q.dot(dir);
+        if depth.is_finite() && best.is_none_or(|(bz, _)| depth < bz) {
+            best = Some((depth, q));
         }
     }
-    best
+    best.map(|(_, q)| q)
 }

@@ -11,6 +11,10 @@ How to write it (see AGENTS.md):
 
 ## Unreleased
 
+### Improved
+- The Workspace button on the status bar opens a menu of the workspaces, as on Windows, with the current one checked.
+- The workspace menus show 3D Modeling greyed out, with a note that 3D solids are not available in this build yet.
+
 ## 3.0.0
 
 ### New

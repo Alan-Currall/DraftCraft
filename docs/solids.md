@@ -44,14 +44,16 @@ Bodies are kept near their own origin. A solid is made around its base point and
 | BOX, WEDGE, CYLINDER, CONE, SPHERE, TORUS | JSON and interactive prompts. |
 | EXTRUDE, REVOLVE | Profiles can be circles, closed polylines (with bulges) or regions. The profiles are erased unless `keepProfiles` is set. EXTRUDE takes a taper angle. |
 | UNION, SUBTRACT, INTERSECT | These are the existing region commands. When solids are selected, they use the kernel. |
-| SLICE | Cuts by a plane given as origin and normal, two points, or XY/YZ/ZX. Keeps both sides or the side with a given point. |
-| FILLETEDGE, CHAMFEREDGE | Edges are picked by a point near them. |
-| SOLIDEDIT | Only the Shell operation; it can remove faces. Other operations report "not available yet". |
-| INTERFERE | Reports whether solids interfere. It can create the interference solid. |
+| SLICE | Cuts by a plane given as origin and normal, two points, or XY/YZ/ZX. Keeps both sides or the side with a given point. A point typed as `x,y,z` (or `@dx,dy,dz`) keeps its Z: the XY plane goes at that height, and the side point can be above or below it; a picked point is in the XY plane. A side point on the plane is refused. |
+| FILLETEDGE, CHAMFEREDGE | Edges are picked by a point near them, along the current view: in plan the top edge of a box, seen from below the bottom one. |
+| SOLIDEDIT | Only the Shell operation; it can remove faces, picked as the face nearest the viewer along the current view. Other operations report "not available yet". |
+| INTERFERE | Reports whether solids interfere. It can create the interference solid. Solids whose boxes are apart are ruled out without the kernel; each body is read once; the interference is drawn only when it is created. |
 | MASSPROP | For solids: mass at density 1, volume, surface area, bounding box, centroid, moments and products of inertia about the origin, radii of gyration, and moments about the centroid. |
 | FLATSHOT | Hidden-line view as lines, arcs and circles (exact where the projection is a line or an arc). Hidden lines can be shown in the HIDDEN linetype. |
 | SECTION | The cut through solids as regions. |
 | VPOINT, 3DORBIT, PLAN, VSCURRENT | The 3D view (S4, below). Without the feature, 3DORBIT still says "not available yet". |
+
+A command that works through several objects (EXTRUDE of several profiles, SLICE of several solids, FLATSHOT, UNION/SUBTRACT/INTERSECT of solids and regions) changes all of them or, when it fails, none (`Session::all_or_nothing`).
 
 All of them are `CommandSpec`s with tests (`crates/engine/src/cmd/solids/tests.rs`). They are reachable from the command line, scripts, the CLI, the control channel and MCP. They sit on the ribbon's *3D Modeling* tab, which has four panels: Modeling, Solid Editing, Section and View. Their labels are translated into Italian and Chinese.
 
@@ -79,20 +81,23 @@ Solids the ACIS writer can't describe yet, and every solid in a build without th
 
    | Group | Holds |
    |---|---|
-   | 1 | `DraftCraft solid 1` |
+   | 1 | `DraftCraft solid 2` |
    | 90 | Mesh count |
    | 91, 92 | Face count, edge count |
    | 140 | Volume |
    | 16 × 40 | Placement, row-major |
    | 93 | Body length |
    | 310 | The body, in chunks of 127 bytes |
+   | 300 | One per mesh, in order: its fingerprint (vertex count, face count, a hash of the face indices, bounding box) |
 
-On open, `draftcraft-io` with `solids` finds the marked meshes and turns them back into the solid. It drops the extra meshes, the record and the dictionary. The engine then redraws each reopened solid from its body.
+On open, `draftcraft-io` with `solids` finds the marked meshes and turns them back into the solid. It drops the extra meshes, the record and the dictionary, and draws the solid from its body.
+
+- **Only unchanged meshes come back:** the first mesh and each other mesh must match their fingerprints. A mesh edited or moved in another program, or a copy (AutoCAD's COPY copies the record with the mesh), stays the mesh it is now. The other meshes are found by fingerprint, never by position: a mesh missing means no solid, and no other mesh is taken or deleted (tested).
 
 - **Without the feature:** the meshes stay meshes and the record is kept as foreign data, so a save writes it back.
 - **A damaged record:** the mesh is kept and nothing crashes (tested).
 - **The save tells the user:** it says on the command line (and in `solidsAsMeshes`) how many solids other programs see as meshes: those not saved as 3DSOLIDs.
-- **Open time:** reopening a file saved with DraftCraft solids decodes each body once. That covers up to 100,000 solids (`MAX_REFRESHED`) and skips any look past 200,000 triangles. Files with no DraftCraft solids never call the kernel.
+- **Open time:** only the solids that come back from their meshes are drawn from their bodies on open (a look past 200,000 triangles keeps the mesh's). Solids read from ACIS get their look as they are read; nothing is drawn twice.
 
 S1 (native DWG items) was not needed for this. The DWG writer already writes POLYLINE, DICTIONARY and XRECORD with binary 310 groups. The direct DWG reader keeps the extension dictionaries and objects, and DWG 2013/2018 solids from other programs already keep their data-store geometry (`e284f21e`).
 
@@ -120,14 +125,15 @@ These change the view, never the drawing, and are not undone.
 
 The drawing area paints the 3D view on the CPU with egui's painter:
 - **Projection:** orthographic.
-- **What it draws:** 2D objects lie on the XY plane; solids are drawn from their looks.
+- **What it draws:** 2D objects lie on the XY plane; solids are drawn from their looks, those inside blocks too (placed by each reference, nested to `MAX_BLOCK_DEPTH`, and selected through the outermost reference). A mirrored solid's triangles are wound back so their outsides stay outside (`Solid3d::world_triangle`); the meshes a file keeps are wound the same way.
 - **Faces:** filled back to front.
-- **Edges and silhouettes:** cut into short pieces, each tested against the faces in front of it on a screen grid. So the Hidden and shaded styles show only the edges a viewer sees, including the silhouettes of curved faces.
+- **Edges and silhouettes:** cut into short pieces, each tested against the faces in front of it on a screen grid. So the Hidden and shaded styles show only the edges a viewer sees, including the silhouettes of curved faces. Faces off the view are left out of the grid.
+- **Repaints:** what was painted is kept until the drawing, the view, the canvas or the selection changes, so a repaint with nothing changed sorts and cuts nothing again.
 - **Navigation:** the wheel zooms about the cursor and the middle button pans.
 - **Clicks:**
   - At a selection prompt, a click picks the front-most solid, or a 2D object within 5 points.
   - With no command running, a click toggles the selection.
-  - At a point prompt, a click gives the point on the XY plane under the cursor. A view looking along that plane asks the user to type the point instead.
+  - At a point prompt, a click gives the point on the XY plane under the cursor. A view looking along that plane asks the user to type the point instead. Commands that pick an edge or a face (FILLETEDGE, CHAMFEREDGE, SOLIDEDIT Shell) take the line of sight through that point along the view, so they get what was clicked.
 
 ### The 3D Modeling workspace
 

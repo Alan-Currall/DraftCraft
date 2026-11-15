@@ -149,7 +149,7 @@ fn cmd_wasm() -> Result<(), String> {
 }
 
 /// The features `ci --solids` turns on: the 3D solids feature of every app (docs/solids.md).
-const SOLIDS_FEATURES: &str = "draftcraft/solids,draftcraft-cli/solids,draftcraft-web/solids";
+const SOLIDS_FEATURES: &str = "draftcraft/solids,draftcraft-cli/solids";
 
 /// The solids kernel checked for wasm32 (the web build keeps solids off, but the kernel must
 /// keep building there).

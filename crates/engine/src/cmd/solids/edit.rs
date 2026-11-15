@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::super::machines::{SelOutcome, SelectPhase, number};
 use super::super::{CommandSpec, bad, f64_req, point_value, str_param, targets};
-use super::{add_like, body_in, other, pick_edge, pick_face, point3, point3_req, replace, solid_kind, solids, translation};
+use super::{DOWN, add_like, body_in, other, pick_edge, pick_face, point3, point3_req, replace, sight, solid_kind, solids, translation};
 use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -187,7 +187,12 @@ enum Keep {
     Side(Vec3),
 }
 
+/// SLICE the solids `hs`: all of them or, on an error, none.
 fn slice(s: &mut Session, hs: &[Handle], origin: Vec3, normal: Vec3, keep: Keep) -> Result<Value> {
+    s.all_or_nothing(|s| slice_all(s, hs, origin, normal, keep))
+}
+
+fn slice_all(s: &mut Session, hs: &[Handle], origin: Vec3, normal: Vec3, keep: Keep) -> Result<Value> {
     let sols = solids(s, hs)?;
     if sols.is_empty() {
         return Err(other("Select 3D solids to slice."));
@@ -196,13 +201,18 @@ fn slice(s: &mut Session, hs: &[Handle], origin: Vec3, normal: Vec3, keep: Keep)
     if !(n.is_finite() && n.len() > 0.5) {
         return Err(other("The slicing plane isn't valid."));
     }
+    if let Keep::Side(p) = keep
+        && on_plane(p, origin, n)
+    {
+        return Err(other("The point on the side to keep is on the slicing plane."));
+    }
     let mut made = Vec::new();
     for (h, so) in sols {
         let (body, o) = world_body(&so)?;
         let (pos, neg) = solid::slice(&body, origin - o, n).map_err(super::kernel)?;
         let keep_pos = match keep {
             Keep::Both => None,
-            Keep::Side(p) => Some((p - origin).dot(n) >= 0.0),
+            Keep::Side(p) => Some((p - origin).dot(n) > 0.0),
         };
         let parts: Vec<Body> = match keep_pos {
             None => pos.into_iter().chain(neg).collect(),
@@ -225,6 +235,13 @@ fn slice(s: &mut Session, hs: &[Handle], origin: Vec3, normal: Vec3, keep: Keep)
         }
     }
     Ok(json!({ "handles": made.iter().map(|h| h.hex()).collect::<Vec<_>>() }))
+}
+
+/// Whether `p` lies on the plane through `o` with normal `n` (to the drawing's precision).
+fn on_plane(p: Vec3, o: Vec3, n: Vec3) -> bool {
+    let n = n.normalized();
+    let scale = 1.0 + p.len().max(o.len());
+    ((p - o).dot(n)).abs() <= 1e-9 * scale
 }
 
 /// A vertical plane through two points in plan: origin and normal.
@@ -304,7 +321,16 @@ impl Interactive for SliceM {
         }
         if let Some((o, n)) = self.plane {
             let keep = match i {
-                Input::Point(p) => Keep::Side(p.to3(o.z)),
+                // A picked point is in the XY plane; a typed `x,y,z` keeps its height, so the
+                // side of a plane parallel to XY can be chosen.
+                Input::Point(p) => {
+                    let q = p.to3(s.point_z.unwrap_or(0.0));
+                    if on_plane(q, o, n) {
+                        s.echo("That point is on the slicing plane: specify a point on one side, or Both.");
+                        return Ok(Step::Continue);
+                    }
+                    Keep::Side(q)
+                }
                 Input::Keyword(_) | Input::Enter => Keep::Both,
                 _ => return Ok(Step::Continue),
             };
@@ -315,7 +341,8 @@ impl Interactive for SliceM {
         }
         if let Some(n) = self.axis_plane {
             let o = match i {
-                Input::Point(p) => p.to3(0.0),
+                // A typed `x,y,z` puts the plane at that height.
+                Input::Point(p) => p.to3(s.point_z.unwrap_or(0.0)),
                 Input::Enter => Vec3::ZERO,
                 _ => return Ok(Step::Continue),
             };
@@ -355,7 +382,7 @@ fn edge_points(s: &Session, p: &Value, handle: Option<Handle>) -> Result<(Handle
         let (h, at) = if is3 && owner.is_some() {
             (owner.unwrap_or_default(), q)
         } else {
-            pick_edge(s, q.xy(), &only)?.ok_or_else(|| other("No solid edge there."))?
+            pick_edge(s, q.xy().to3(0.0), DOWN, &only)?.ok_or_else(|| other("No solid edge there."))?
         };
         if owner.is_some_and(|o| o != h) {
             return Err(other("All edges must belong to one solid."));
@@ -433,7 +460,8 @@ impl Interactive for EdgeM {
             Input::Keyword(_) => self.asking_size = true,
             Input::Point(p) => {
                 let only: Vec<Handle> = self.owner.into_iter().collect();
-                match pick_edge(s, p, &only)? {
+                let (at, dir) = sight(s, p);
+                match pick_edge(s, at, dir, &only)? {
                     Some((h, q)) => {
                         self.owner = Some(h);
                         self.edges.push(q);
@@ -455,11 +483,12 @@ impl Interactive for EdgeM {
 
 // ---- SOLIDEDIT ▸ Body ▸ Shell -----------------------------------------------------------------
 
-fn shell(s: &mut Session, h: Handle, remove: &[Vec2], thickness: f64) -> Result<Value> {
+/// `remove`: lines of sight (a point and a direction) through the faces to remove.
+fn shell(s: &mut Session, h: Handle, remove: &[(Vec3, Vec3)], thickness: f64) -> Result<Value> {
     let so = solids(s, &[h])?.into_iter().next().map(|(_, so)| so).ok_or_else(|| other("That is not a 3D solid."))?;
     let mut open = Vec::with_capacity(remove.len());
-    for p in remove {
-        open.push(pick_face(&so, *p).ok_or_else(|| other("No face of the solid there."))?);
+    for (at, dir) in remove {
+        open.push(pick_face(&so, *at, *dir).ok_or_else(|| other("No face of the solid there."))?);
     }
     let (body, o) = world_body(&so)?;
     let local: Vec<Vec3> = open.iter().map(|p| *p - o).collect();
@@ -475,11 +504,13 @@ fn run_solidedit(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let h = handle_param(p).ok_or_else(|| bad("solidedit", "`handle` is required"))?;
     let thickness = f64_req("solidedit", p, "thickness")?;
-    let remove: Vec<Vec2> = match p.get("remove").and_then(Value::as_array) {
+    // Points seen from above (plan view).
+    let remove: Vec<(Vec3, Vec3)> = match p.get("remove").and_then(Value::as_array) {
         Some(a) if a.len() > 10_000 => return Err(bad("solidedit", "`remove` has too many points")),
-        Some(a) => {
-            a.iter().map(|v| point_value(v).ok_or_else(|| bad("solidedit", format!("`remove`: {v} is not a point")))).collect::<Result<_>>()?
-        }
+        Some(a) => a
+            .iter()
+            .map(|v| point_value(v).map(|q| (q.to3(0.0), DOWN)).ok_or_else(|| bad("solidedit", format!("`remove`: {v} is not a point"))))
+            .collect::<Result<_>>()?,
         None => Vec::new(),
     };
     shell(s, h, &remove, thickness)
@@ -490,7 +521,7 @@ struct ShellM {
     /// 0 option, 1 body option, 2 select solid, 3 remove faces, 4 distance.
     stage: u8,
     solid: Option<Handle>,
-    remove: Vec<Vec2>,
+    remove: Vec<(Vec3, Vec3)>,
 }
 
 impl Interactive for ShellM {
@@ -524,7 +555,10 @@ impl Interactive for ShellM {
             2 => {
                 let picked = match i {
                     Input::Pick(hs) => hs,
-                    Input::Point(p) => pick_edge(s, p, &[])?.map(|(h, _)| vec![h]).unwrap_or_default(),
+                    Input::Point(p) => {
+                        let (at, dir) = sight(s, p);
+                        pick_edge(s, at, dir, &[])?.map(|(h, _)| vec![h]).unwrap_or_default()
+                    }
                     _ => Vec::new(),
                 };
                 if let Some((h, _)) = solids(s, &picked)?.into_iter().next() {
@@ -533,7 +567,7 @@ impl Interactive for ShellM {
                 }
             }
             3 => match i {
-                Input::Point(p) => self.remove.push(p),
+                Input::Point(p) => self.remove.push(sight(s, p)),
                 Input::Enter => self.stage = 4,
                 _ => {}
             },
@@ -554,52 +588,83 @@ impl Interactive for ShellM {
 /// Most solid pairs INTERFERE compares.
 const MAX_PAIRS: usize = 1_000_000;
 
+/// A box around a solid in the drawing, from its look's corners, grown a little so the facets of
+/// curved faces (which can sit inside the surface) never leave part of the solid outside it.
+fn world_box(so: &Solid3d) -> Option<(Vec3, Vec3)> {
+    let mut it = so.look.positions.iter().map(|p| so.world(*p));
+    let first = it.next()?;
+    let (mut lo, mut hi) = (first, first);
+    for p in it {
+        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+    }
+    let grow = (hi - lo).len() * 0.02 + 1e-9;
+    let g = Vec3::new(grow, grow, grow);
+    let (lo, hi) = (lo - g, hi + g);
+    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+}
+
+fn boxes_meet(a: Option<(Vec3, Vec3)>, b: Option<(Vec3, Vec3)>) -> bool {
+    // A solid without a look can't be ruled out.
+    let (Some((alo, ahi)), Some((blo, bhi))) = (a, b) else { return true };
+    alo.x <= bhi.x && blo.x <= ahi.x && alo.y <= bhi.y && blo.y <= ahi.y && alo.z <= bhi.z && blo.z <= ahi.z
+}
+
 fn interfere(s: &mut Session, first: &[Handle], second: &[Handle], create: bool) -> Result<Value> {
     let a = solids(s, first)?;
     let b = solids(s, second)?;
-    if a.is_empty() {
-        return Err(other("Select 3D solids."));
-    }
-    let mut pairs: Vec<(usize, usize, bool)> = Vec::new();
-    if b.is_empty() {
-        for i in 0..a.len() {
-            for j in (i + 1)..a.len() {
-                pairs.push((i, j, false));
-            }
-        }
-    } else {
-        for i in 0..a.len() {
-            for j in 0..b.len() {
-                pairs.push((i, j, true));
-            }
-        }
-    }
-    if pairs.len() > MAX_PAIRS {
+    let Some((_, first_solid)) = a.first() else { return Err(other("Select 3D solids.")) };
+    // Every body in one frame (the first solid's), each read once.
+    let frame = first_solid.placement;
+    // Volumes in the frame times its scale are the drawing's.
+    let scale = super::det3(&frame).abs();
+    let all: Vec<&(Handle, Solid3d)> = a.iter().chain(b.iter()).collect();
+    let boxes: Vec<Option<(Vec3, Vec3)>> = all.iter().map(|(_, so)| world_box(so)).collect();
+    let mut bodies: Vec<Option<Body>> = (0..all.len()).map(|_| None).collect();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let (na, nb) = (a.len(), b.len());
+    let wanted = if nb == 0 { na.saturating_mul(na.saturating_sub(1)) / 2 } else { na.saturating_mul(nb) };
+    if wanted > MAX_PAIRS {
         return Err(other("Too many solids to compare."));
+    }
+    for i in 0..na {
+        let others = if nb == 0 { (i + 1)..na } else { na..na + nb };
+        for j in others {
+            // Solids whose boxes are apart don't interfere: no kernel call for them.
+            if boxes_meet(boxes.get(i).copied().flatten(), boxes.get(j).copied().flatten()) {
+                pairs.push((i, j));
+            }
+        }
     }
     let mut found = Vec::new();
     let mut total = 0.0;
-    for (i, j, cross) in pairs {
-        let (Some((ha, sa)), Some((hb, sb))) = (a.get(i), if cross { b.get(j) } else { a.get(j) }) else { continue };
+    for (i, j) in pairs {
+        let (Some((ha, _)), Some((hb, _))) = (all.get(i), all.get(j)) else { continue };
         if ha == hb {
             continue;
         }
-        let x = body_in(sa, &sa.placement)?;
-        let y = body_in(sb, &sa.placement)?;
-        if !x.meets(&y).map_err(super::kernel)? {
+        for k in [i, j] {
+            if bodies.get(k).is_some_and(Option::is_none)
+                && let Some((_, so)) = all.get(k)
+            {
+                let body = body_in(so, &frame)?;
+                if let Some(slot) = bodies.get_mut(k) {
+                    *slot = Some(body);
+                }
+            }
+        }
+        let (Some(Some(x)), Some(Some(y))) = (bodies.get(i), bodies.get(j)) else { continue };
+        if !x.meets(y).map_err(super::kernel)? {
             continue;
         }
-        let Some(common) = solid::boolean(&x, &y, BoolOp::Intersect).map_err(super::kernel)? else { continue };
-        let kind = solid_kind(&common, sa.placement)?;
-        let volume = match &kind {
-            EntityKind::Solid3d(so) => so.volume,
-            _ => 0.0,
-        };
-        if volume <= 0.0 {
+        let Some(common) = solid::boolean(x, y, BoolOp::Intersect).map_err(super::kernel)? else { continue };
+        // The volume needs no look; the solid (and its look) only when it is to be made.
+        let volume = common.mass().map(|m| m.volume).unwrap_or(0.0) * scale;
+        if volume.is_nan() || volume <= 0.0 {
             continue;
         }
         total += volume;
-        let made = if create { Some(add_like(s, *ha, kind)?.hex()) } else { None };
+        let made = if create { Some(add_like(s, *ha, solid_kind(&common, frame)?)?.hex()) } else { None };
         found.push(json!({ "a": ha.hex(), "b": hb.hex(), "volume": volume, "handle": made }));
     }
     let message = if found.is_empty() {

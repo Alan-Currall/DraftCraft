@@ -1381,6 +1381,7 @@ fn app_bar(app: &mut CadApp, ui: &mut egui::Ui, bar: Rect, out: &mut Out) {
                 ui.close();
             }
         }
+        crate::workspaces::show_unavailable(app, ui);
         ui.separator();
         if ui.button(crate::tl!("Save Current As...")).clicked() {
             out.command = Some("cui");

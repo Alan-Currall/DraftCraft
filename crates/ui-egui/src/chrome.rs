@@ -195,6 +195,7 @@ fn workspace_menu(app: &mut CadApp, resp: &egui::Response) {
                 ui.close();
             }
         }
+        crate::workspaces::show_unavailable(app, ui);
     });
     if let Some(name) = pick {
         let _ = app.run("wscurrent", json!({ "name": name }));

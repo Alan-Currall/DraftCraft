@@ -150,7 +150,12 @@ fn apply(s: &mut Session, keep: Handle, r: Region, erase: &[Handle]) -> Result<(
     Ok(())
 }
 
+/// UNION and INTERSECT: all or nothing.
 fn fold(s: &mut Session, hs: &[Handle], op: Op) -> Result<Value> {
+    s.all_or_nothing(|s| fold_parts(s, hs, op))
+}
+
+fn fold_parts(s: &mut Session, hs: &[Handle], op: Op) -> Result<Value> {
     #[cfg(feature = "solids")]
     if let Some(v) = super::super::solids::try_boolean(s, hs, matches!(op, Op::Union))? {
         return Ok(v);
@@ -184,7 +189,12 @@ fn handles(p: &Value, key: &str) -> Result<Vec<Handle>> {
     a.iter().map(|v| super::super::curves::handle_value(v).ok_or_else(|| bad("subtract", format!("`{key}`: {v} is not a handle")))).collect()
 }
 
+/// SUBTRACT: all or nothing (solids and regions together).
 fn subtract(s: &mut Session, from: &[Handle], remove: &[Handle]) -> Result<Value> {
+    s.all_or_nothing(|s| subtract_parts(s, from, remove))
+}
+
+fn subtract_parts(s: &mut Session, from: &[Handle], remove: &[Handle]) -> Result<Value> {
     #[cfg(feature = "solids")]
     if let Some(v) = super::super::solids::try_subtract(s, from, remove)? {
         return Ok(v);

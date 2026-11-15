@@ -124,3 +124,29 @@ fn typed_cui_opens_the_dialog_and_never_from_json() {
     app.run("workspace", json!({"operation": "list"})).unwrap();
     assert_eq!(app.ui.dialog, None);
 }
+
+#[test]
+fn a_saved_workspace_named_3d_modeling_is_not_hidden() {
+    // Review of PR 20: a "3D Modeling" saved by a DraftCraft built without solids was shadowed
+    // by the built-in one and could not be reached or deleted.
+    let mut app = app();
+    let mut saved = draftcraft_ui_egui::workspaces::SavedWorkspace { name: "3D Modeling".into(), ..Default::default() };
+    saved.show_status_bar = false;
+    app.ui.workspaces.push(saved);
+    // Listed once.
+    let r = app.run("workspace", json!({"operation": "list"})).unwrap();
+    let names: Vec<&str> = r["workspaces"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(names.iter().filter(|n| **n == "3D Modeling").count(), 1, "{names:?}");
+    // Its layout comes back.
+    app.run("wscurrent", json!({"name": "3D Modeling"})).unwrap();
+    assert!(!app.ui.show_status_bar);
+    // And it can be deleted (from another workspace): the built-in one, if any, stays.
+    app.run("wscurrent", json!({"name": "2D Drafting"})).unwrap();
+    let r = app.run("workspace", json!({"operation": "delete", "name": "3D Modeling"})).unwrap();
+    assert_eq!(r["workspaces"], listed(&[]));
+    if cfg!(feature = "solids") {
+        app.run("wscurrent", json!({"name": "3D Modeling"})).unwrap();
+        assert!(app.ui.show_status_bar, "the built-in layout");
+        assert!(app.run("workspace", json!({"operation": "delete", "name": "2D Drafting"})).is_err());
+    }
+}

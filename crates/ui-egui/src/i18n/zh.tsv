@@ -1635,6 +1635,7 @@ menu	CAD Standards	CAD 标准
 	Enter output file name	输入要写入的文件名
 	Enter input file name	输入要读取的文件名
 # 3D solids (docs/solids.md).
+	3D solids are not available in this build.	此版本不提供三维实体。
 	3D Modeling	三维建模
 	3D Solid	三维实体
 	Section	截面

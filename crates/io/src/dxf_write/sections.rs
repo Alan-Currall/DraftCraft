@@ -746,8 +746,8 @@ fn write_solid_records(w: &mut W, d: &Drawing, cx: &Ctx) {
         w.s(330, xdict.clone());
         w.s(100, "AcDbXrecord");
         w.i(280, 1);
-        let parts = crate::solid_file::meshes(so).len();
-        for (code, v) in crate::solid_file::record_groups(so, parts) {
+        let parts = crate::solid_file::meshes(so);
+        for (code, v) in crate::solid_file::record_groups(so, &parts) {
             match v {
                 crate::solid_file::Value::S(s) => w.s(code, s),
                 crate::solid_file::Value::I(i) => w.i(code, i),

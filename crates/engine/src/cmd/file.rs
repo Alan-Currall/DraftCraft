@@ -353,11 +353,7 @@ pub fn finish_open(s: &mut Session, f: ReadFile) -> Result<Value> {
 
 fn read_bytes(bytes: &[u8], name: &str, path: Option<String>) -> Result<ReadFile> {
     let hooks = io().ok_or_else(|| bad("open", "file formats are not available in this build"))?;
-    #[cfg_attr(not(feature = "solids"), allow(unused_mut))]
-    let mut drawing = (hooks.read)(bytes, name).map_err(|e| bad("open", e))?;
-    // A solid read back from its file form has the look of its mesh: draw it from the body.
-    #[cfg(feature = "solids")]
-    super::solids::refresh_looks(&mut drawing);
+    let drawing = (hooks.read)(bytes, name).map_err(|e| bad("open", e))?;
     // A file that isn't a drawing (an imported SVG) gives the drawing no file name: QSAVE then
     // asks where to save instead of exporting over the original.
     let path = path.filter(|p| is_drawing_file(p));

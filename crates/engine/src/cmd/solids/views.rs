@@ -82,7 +82,12 @@ fn seg_kind(seg: &Seg, at: Vec2) -> EntityKind {
 /// Most objects one FLATSHOT or SECTION adds.
 const MAX_OUTPUT: usize = 1_000_000;
 
+/// FLATSHOT: the whole view or, on an error (too many lines), nothing.
 fn flatshot(s: &mut Session, hs: &[Handle], dir: Vec3, up: Vec3, base: Vec2, hidden: bool) -> Result<Value> {
+    s.all_or_nothing(|s| flatshot_lines(s, hs, dir, up, base, hidden))
+}
+
+fn flatshot_lines(s: &mut Session, hs: &[Handle], dir: Vec3, up: Vec3, base: Vec2, hidden: bool) -> Result<Value> {
     let sols = solids(s, hs)?;
     if sols.is_empty() {
         return Err(other("There are no 3D solids to draw."));
@@ -387,7 +392,8 @@ impl Interactive for SectionM {
         }
         let plane = if let Some(n) = self.axis {
             let o = match i {
-                Input::Point(p) => p.to3(0.0),
+                // A typed `x,y,z` puts the plane at that height.
+                Input::Point(p) => p.to3(s.point_z.unwrap_or(0.0)),
                 Input::Enter => Vec3::ZERO,
                 _ => return Ok(Step::Continue),
             };

@@ -13,10 +13,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use draftcraft_color::Rgb;
-use draftcraft_doc::{EntityKind, Handle, Space};
+use draftcraft_doc::{Drawing, EntityKind, EntityStore, Handle, Insert, MAX_BLOCK_DEPTH, Solid3d, Space};
 use draftcraft_engine::Input;
 use draftcraft_engine::view3d::{View3d, VisualStyle};
-use draftcraft_geom::{Vec2, Vec3};
+use draftcraft_geom::{Mat3, Mat4, Vec2, Vec3};
 use draftcraft_render::Kind;
 use egui::{Color32, Mesh, Pos2, Rect, Shape, Stroke, pos2};
 
@@ -85,28 +85,136 @@ fn display(c: Rgb, aci7: bool, bg: Rgb) -> Rgb {
     if light { Rgb(0, 0, 0) } else { Rgb(255, 255, 255) }
 }
 
+/// Most block references (array cells included) followed to find the solids inside blocks.
+const MAX_INSERT_VISITS: usize = 100_000;
+
+/// A block reference's 3D transform for one cell of its array: its plan transform, with its
+/// insertion height and Z scale.
+fn insert_matrix(ins: &Insert, base: Vec3, col: u32, row: u32) -> Mat4 {
+    let (dx, dy) = (f64::from(col) * ins.col_spacing, f64::from(row) * ins.row_spacing);
+    let (s, c) = ins.rotation.sin_cos();
+    let at = ins.insert.xy() + Vec2::new(dx * c - dy * s, dx * s + dy * c);
+    let t = Mat3::translate(at)
+        .then_before(Mat3::rotate(ins.rotation))
+        .then_before(Mat3::scale(ins.scale.x, ins.scale.y))
+        .then_before(Mat3::translate(-base.xy()));
+    let mut m = Mat4::from_mat3(&t);
+    m.m[2][2] = ins.scale.z;
+    m.m[2][3] = ins.insert.z - ins.scale.z * base.z;
+    m
+}
+
+/// Whether block `name` holds 3D solids, itself or in the blocks it references.
+fn block_has_solids(d: &Drawing, name: &str, depth: usize, memo: &mut HashMap<String, bool>) -> bool {
+    let key = name.to_ascii_lowercase();
+    if let Some(v) = memo.get(&key) {
+        return *v;
+    }
+    // Cut a cycle short while it is being looked at.
+    memo.insert(key.clone(), false);
+    let Some(b) = d.block(name) else { return false };
+    let has = depth < MAX_BLOCK_DEPTH
+        && b.entities.iter().any(|e| match &e.kind {
+            EntityKind::Solid3d(_) => true,
+            EntityKind::Insert(i) => block_has_solids(d, &i.block, depth + 1, memo),
+            _ => false,
+        });
+    memo.insert(key, has);
+    has
+}
+
+/// The solids of `st` placed by `m`, each with the handle that selects it: its own at the top,
+/// the outermost block reference's inside blocks (nested to [`MAX_BLOCK_DEPTH`]).
+#[allow(clippy::too_many_arguments)]
+fn collect_solids(
+    d: &Drawing,
+    st: &EntityStore,
+    m: Option<Mat4>,
+    top: Option<Handle>,
+    depth: usize,
+    visits: &mut usize,
+    memo: &mut HashMap<String, bool>,
+    out: &mut Vec<(Handle, Solid3d)>,
+) {
+    for e in st.iter() {
+        match &e.kind {
+            EntityKind::Solid3d(so) => {
+                let mut so = so.clone();
+                if let Some(m) = &m {
+                    so.placement = m.mul(&so.placement);
+                }
+                out.push((top.unwrap_or(e.handle), so));
+            }
+            EntityKind::Insert(ins) if depth < MAX_BLOCK_DEPTH && block_has_solids(d, &ins.block, depth, memo) => {
+                let Some(b) = d.block(&ins.block) else { continue };
+                for row in 0..ins.rows.max(1) {
+                    for col in 0..ins.cols.max(1) {
+                        *visits += 1;
+                        if *visits > MAX_INSERT_VISITS {
+                            return;
+                        }
+                        let here = insert_matrix(ins, b.base, col, row);
+                        let m = m.as_ref().map_or(here, |outer| outer.mul(&here));
+                        collect_solids(d, &b.entities, Some(m), Some(top.unwrap_or(e.handle)), depth + 1, visits, memo, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `d` without the solids inside its blocks, for the flat part of the 3D view (those solids are
+/// drawn in 3D); `None` when no block holds one.
+fn without_block_solids(d: &Drawing) -> Option<Drawing> {
+    let names: Vec<String> =
+        d.blocks.iter().filter(|(_, b)| b.entities.iter().any(|e| matches!(e.kind, EntityKind::Solid3d(_)))).map(|(k, _)| k.clone()).collect();
+    if names.is_empty() {
+        return None;
+    }
+    let mut c = d.clone();
+    for n in names {
+        if let Some(b) = c.blocks.get_mut(&n) {
+            let hs: Vec<Handle> = b.entities.iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_))).map(|e| e.handle).collect();
+            let b = Arc::make_mut(b);
+            for h in hs {
+                b.entities.remove(h);
+            }
+        }
+    }
+    Some(c)
+}
+
 impl Scene {
-    fn build(d: &draftcraft_doc::Drawing, key: (u64, u64)) -> Scene {
-        let list = draftcraft_render::build(d, &Space::Model, &draftcraft_render::Options::default());
+    fn build(d: &Drawing, key: (u64, u64)) -> Scene {
+        let flat = without_block_solids(d);
+        let list = draftcraft_render::build(flat.as_ref().unwrap_or(d), &Space::Model, &draftcraft_render::Options::default());
         let mut colors: HashMap<Handle, (Rgb, bool)> = HashMap::new();
         for p in &list.prims {
             colors.entry(p.handle).or_insert((p.color, p.aci7));
         }
         let mut scene = Scene { key, segs: Vec::new(), fills: Vec::new(), tris: Vec::new(), solids: Vec::new(), smooth: Vec::new() };
         let mut solid_handles = std::collections::HashSet::new();
+        let mut placed: Vec<(Handle, Solid3d)> = Vec::new();
         if let Some(st) = d.space(&Space::Model) {
-            for e in st.iter() {
-                let EntityKind::Solid3d(so) = &e.kind else { continue };
-                solid_handles.insert(e.handle);
+            let (mut visits, mut memo) = (0usize, HashMap::new());
+            collect_solids(d, st, None, None, 0, &mut visits, &mut memo, &mut placed);
+        }
+        {
+            for (handle, so) in &placed {
+                let handle = *handle;
+                if d.space(&Space::Model).and_then(|st| st.get(handle)).is_some_and(|e| matches!(e.kind, EntityKind::Solid3d(_))) {
+                    solid_handles.insert(handle);
+                }
                 let Ok(index) = u32::try_from(scene.solids.len()) else { break };
-                let (color, aci7) = colors.get(&e.handle).copied().unwrap_or((Rgb(255, 255, 255), true));
-                scene.solids.push(SolidInfo { handle: e.handle, color, aci7 });
+                let (color, aci7) = colors.get(&handle).copied().unwrap_or((Rgb(255, 255, 255), true));
+                scene.solids.push(SolidInfo { handle, color, aci7 });
                 for wire in &so.look.wires {
                     for w in wire.windows(2) {
                         if let [a, b] = w
                             && scene.segs.len() < MAX_SEGMENTS
                         {
-                            scene.segs.push(Seg { a: so.world(*a), b: so.world(*b), color, aci7, solid: Some(index), handle: e.handle });
+                            scene.segs.push(Seg { a: so.world(*a), b: so.world(*b), color, aci7, solid: Some(index), handle });
                         }
                     }
                 }
@@ -122,7 +230,8 @@ impl Scene {
                         break;
                     }
                     let Some(local) = so.look.triangle(t) else { continue };
-                    let p = local.map(|c| so.world(c));
+                    // Wound to face out, a mirrored solid too.
+                    let p = so.world_triangle(local);
                     let n = (p[1] - p[0]).cross(p[2] - p[0]).normalized();
                     let Ok(ti) = u32::try_from(scene.tris.len()) else { break };
                     scene.tris.push(Tri { p, n, solid: index });
@@ -239,7 +348,7 @@ impl Occluders {
             }
             let (lo, hi) =
                 (s.iter().fold(Pos2::new(f32::MAX, f32::MAX), |a, p| a.min(*p)), s.iter().fold(Pos2::new(f32::MIN, f32::MIN), |a, p| a.max(*p)));
-            let (Some((c0, r0)), Some((c1, r1))) = (o.cell(lo), o.cell(hi)) else { continue };
+            let Some((c0, r0, c1, r1)) = o.cells_of(lo, hi) else { continue };
             for r in r0..=r1 {
                 for c in c0..=c1 {
                     if let Some(cell) = o.cells.get_mut(r * cols + c) {
@@ -250,14 +359,32 @@ impl Occluders {
         }
         o
     }
-    /// The cell of screen point `p`, clamped to the grid; `None` for a point that is no point.
+    /// The cell of screen point `p`; `None` outside the grid (off the view) or for a point that
+    /// is no point.
     fn cell(&self, p: Pos2) -> Option<(usize, usize)> {
         if !(p.x.is_finite() && p.y.is_finite()) {
             return None;
         }
-        let c = ((p.x - self.min.x) / CELL).floor().clamp(0.0, (self.cols - 1) as f32) as usize;
-        let r = ((p.y - self.min.y) / CELL).floor().clamp(0.0, (self.rows - 1) as f32) as usize;
-        Some((c, r))
+        let (c, r) = ((p.x - self.min.x) / CELL, (p.y - self.min.y) / CELL);
+        if c < 0.0 || r < 0.0 || c >= self.cols as f32 || r >= self.rows as f32 {
+            return None;
+        }
+        Some((c.floor() as usize, r.floor() as usize))
+    }
+    /// The cells a screen box from `lo` to `hi` covers, cut to the grid; `None` when it lies
+    /// wholly off the view (such a triangle hides nothing on screen).
+    fn cells_of(&self, lo: Pos2, hi: Pos2) -> Option<(usize, usize, usize, usize)> {
+        if !(lo.x.is_finite() && lo.y.is_finite() && hi.x.is_finite() && hi.y.is_finite()) {
+            return None;
+        }
+        let (c0, r0) = ((lo.x - self.min.x) / CELL, (lo.y - self.min.y) / CELL);
+        let (c1, r1) = ((hi.x - self.min.x) / CELL, (hi.y - self.min.y) / CELL);
+        let (cols, rows) = (self.cols as f32, self.rows as f32);
+        if c1 < 0.0 || r1 < 0.0 || c0 >= cols || r0 >= rows {
+            return None;
+        }
+        let at = |v: f32, n: f32| v.floor().clamp(0.0, n - 1.0) as usize;
+        Some((at(c0, cols), at(r0, rows), at(c1, cols), at(r1, rows)))
     }
     /// The depth of the nearest front-facing triangle covering screen point `p`, and which.
     fn nearest(&self, p: Pos2) -> Option<(f64, u32)> {
@@ -370,12 +497,87 @@ pub(super) fn show(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect, resp: &egui:
 
     // ---- paint ----
     painter.rect_filled(rect, 0.0, t.canvas);
-    let bg = rgb(t.canvas);
     let Some(scene) = scene(app, ui.ctx()) else { return true };
     let selected: std::collections::HashSet<Handle> = app.session.state().map(|s| s.selection.iter().copied().collect()).unwrap_or_default();
     let highlight = Color32::from_rgb(0x4d, 0xa3, 0xff);
-    let size = scene_size(&scene);
-    let occ = v.style.fills().then(|| Occluders::new(&scene, &pr, rect, size * 1e-6 + 1e-9));
+    let key = PaintKey { scene: scene.key, view: v, rect, selection: selection_key(&selected), bg: t.canvas };
+    let painted = painted(ui.ctx(), &scene, &key, &pr, &selected, highlight);
+    painter.extend(painted.shapes.iter().cloned());
+    draw_axes(&painter, &pr, rect, t.text);
+    super::view3d_overlay::show(app, ui, rect, &v, ORBIT_PER_POINT);
+
+    // ---- clicks ----
+    if inside
+        && resp.clicked()
+        && !orbiting_cmd
+        && let Some(at) = hover
+    {
+        click(app, &scene, painted.occ.as_deref(), &pr, &v, at);
+    }
+    true
+}
+
+/// What a repaint of the 3D view draws, kept until the drawing, the view, the canvas or the
+/// selection changes: sorting the faces, binning them for hidden lines and cutting every edge
+/// into visible pieces is done once, not on every frame.
+#[derive(Clone, PartialEq)]
+struct PaintKey {
+    scene: (u64, u64),
+    view: View3d,
+    rect: Rect,
+    selection: u64,
+    bg: Color32,
+}
+
+#[derive(Clone)]
+struct Painted {
+    key: PaintKey,
+    shapes: Arc<Vec<Shape>>,
+    occ: Option<Arc<Occluders>>,
+}
+
+fn selection_key(selected: &std::collections::HashSet<Handle>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hs: Vec<&Handle> = selected.iter().collect();
+    hs.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    hs.hash(&mut h);
+    h.finish()
+}
+
+fn painted(
+    ctx: &egui::Context,
+    scene: &Scene,
+    key: &PaintKey,
+    pr: &Proj,
+    selected: &std::collections::HashSet<Handle>,
+    highlight: Color32,
+) -> Painted {
+    let id = egui::Id::unique("draftcraft-view3d-painted");
+    if let Some(p) = ctx.data(|d| d.get_temp::<Painted>(id)).filter(|p| p.key == *key) {
+        return p;
+    }
+    let (shapes, occ) = paint(scene, &key.view, pr, key.rect, selected, highlight, key.bg);
+    let p = Painted { key: key.clone(), shapes: Arc::new(shapes), occ: occ.map(Arc::new) };
+    ctx.data_mut(|d| d.insert_temp(id, p.clone()));
+    p
+}
+
+/// The shapes of the 3D view `v` of `scene`, and the faces binned for hidden lines and picking
+/// (styles with faces).
+fn paint(
+    scene: &Scene,
+    v: &View3d,
+    pr: &Proj,
+    rect: Rect,
+    selected: &std::collections::HashSet<Handle>,
+    highlight: Color32,
+    canvas: Color32,
+) -> (Vec<Shape>, Option<Occluders>) {
+    let bg = rgb(canvas);
+    let mut out: Vec<Shape> = Vec::new();
+    let size = scene_size(scene);
+    let occ = v.style.fills().then(|| Occluders::new(scene, pr, rect, size * 1e-6 + 1e-9));
 
     // 2D fills lie on the XY plane under the solids: drawn first.
     let mut mesh = Mesh::default();
@@ -383,7 +585,7 @@ pub(super) fn show(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect, resp: &egui:
         let c = display(*c, *aci7, bg);
         add_tri(&mut mesh, p.map(|q| pr.screen(q)), Color32::from_rgb(c.0, c.1, c.2));
     }
-    painter.add(Shape::mesh(mesh));
+    out.push(Shape::mesh(mesh));
 
     if v.style.fills() {
         // Faces back to front.
@@ -401,13 +603,13 @@ pub(super) fn show(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect, resp: &egui:
             let info = scene.solids.get(tri.solid as usize);
             let base = info.map_or(Rgb(200, 200, 200), |s| display(s.color, s.aci7, bg));
             let base = if v.style.shades() { base } else { bg };
-            let col = if v.style.shades() { shade(v.style, base, tri.n, &pr) } else { Color32::from_rgb(bg.0, bg.1, bg.2) };
+            let col = if v.style.shades() { shade(v.style, base, tri.n, pr) } else { Color32::from_rgb(bg.0, bg.1, bg.2) };
             add_tri(&mut mesh, tri.p.map(|q| pr.screen(q)), col);
             if mesh.vertices.len() > 60_000 {
-                painter.add(Shape::mesh(std::mem::take(&mut mesh)));
+                out.push(Shape::mesh(std::mem::take(&mut mesh)));
             }
         }
-        painter.add(Shape::mesh(mesh));
+        out.push(Shape::mesh(mesh));
     }
 
     // Edges, 2D objects and silhouettes, the hidden parts left out.
@@ -428,7 +630,7 @@ pub(super) fn show(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect, resp: &egui:
         if s.solid.is_some() && !v.style.edges() && !selected.contains(&s.handle) {
             continue;
         }
-        visible_pieces(&pr, occ.as_ref(), s.a, s.b, Stroke::new(1.0, edge_color(s)), &mut shapes);
+        visible_pieces(pr, occ.as_ref(), s.a, s.b, Stroke::new(1.0, edge_color(s)), &mut shapes);
     }
     if v.style.fills() && v.style.edges() {
         for (a, b, t1, t2) in &scene.smooth {
@@ -438,7 +640,7 @@ pub(super) fn show(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect, resp: &egui:
             }
             let Some(info) = scene.solids.get(x.solid as usize) else { continue };
             let seg = Seg { a: *a, b: *b, color: info.color, aci7: info.aci7, solid: Some(x.solid), handle: info.handle };
-            visible_pieces(&pr, occ.as_ref(), *a, *b, Stroke::new(1.0, edge_color(&seg)), &mut shapes);
+            visible_pieces(pr, occ.as_ref(), *a, *b, Stroke::new(1.0, edge_color(&seg)), &mut shapes);
         }
     } else if v.style == VisualStyle::Wireframe {
         // Wireframe: curved faces show their silhouettes too.
@@ -452,19 +654,8 @@ pub(super) fn show(app: &mut CadApp, ui: &mut egui::Ui, rect: Rect, resp: &egui:
             }
         }
     }
-    painter.extend(shapes);
-    draw_axes(&painter, &pr, rect, t.text);
-    super::view3d_overlay::show(app, ui, rect, &v, ORBIT_PER_POINT);
-
-    // ---- clicks ----
-    if inside
-        && resp.clicked()
-        && !orbiting_cmd
-        && let Some(at) = hover
-    {
-        click(app, &scene, occ.as_ref(), &pr, &v, at);
-    }
-    true
+    out.extend(shapes);
+    (out, occ)
 }
 
 fn add_tri(mesh: &mut Mesh, p: [Pos2; 3], c: Color32) {
@@ -664,5 +855,83 @@ mod tests {
         let mid = pr.screen(Vec3::new(5.0, 5.0, 5.0));
         assert!(pick(&scene, Some(&occ), &pr, mid).is_some());
         assert!(pick(&scene, Some(&occ), &pr, pos2(1.0, 1.0)).is_none());
+    }
+
+    /// Every triangle of the scene faces away from `mid`.
+    fn faces_out(scene: &Scene, mid: Vec3) -> bool {
+        scene.tris.iter().all(|t| t.n.dot((t.p[0] + t.p[1] + t.p[2]) * (1.0 / 3.0) - mid) > 0.0)
+    }
+
+    #[test]
+    fn a_mirrored_solid_is_not_drawn_inside_out() {
+        // Review of PR 20: the triangles of a mirrored solid faced in.
+        let mut s = draftcraft_engine::Session::new();
+        let r = s.execute("box", &serde_json::json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap();
+        s.execute("mirror", &serde_json::json!({"handles": [r["handle"].clone()], "p1": [0, 0], "p2": [0, 1], "erase": true})).unwrap();
+        let st = s.state().unwrap();
+        let scene = Scene::build(&st.doc, (st.uid, st.revision));
+        assert!(!scene.tris.is_empty());
+        assert!(faces_out(&scene, Vec3::new(-5.0, 5.0, 5.0)));
+    }
+
+    #[test]
+    fn a_solid_in_a_block_is_drawn_in_3d() {
+        // Review of PR 20: solids inside blocks were drawn flat in the 3D view.
+        let mut s = draftcraft_engine::Session::new();
+        let r = s.execute("box", &serde_json::json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap();
+        s.execute("block", &serde_json::json!({"name": "CUBE", "base": [0, 0], "handles": [r["handle"].clone()], "keep": "delete"})).unwrap();
+        s.execute("insert", &serde_json::json!({"name": "CUBE", "at": [100, 0], "scale": [1, -1]})).unwrap();
+        let st = s.state().unwrap();
+        let scene = Scene::build(&st.doc, (st.uid, st.revision));
+        assert_eq!(scene.solids.len(), 1);
+        assert!(!scene.tris.is_empty());
+        // Where the reference puts it, mirrored by its Y scale (its Z scale is its X one), with its height.
+        assert!(scene.tris.iter().flat_map(|t| t.p).all(|p| (100.0 - 1e-9..=110.0 + 1e-9).contains(&p.x) && (-10.0 - 1e-9..=1e-9).contains(&p.y)));
+        assert!(scene.tris.iter().flat_map(|t| t.p).any(|p| (p.z - 10.0).abs() < 1e-9));
+        assert!(faces_out(&scene, Vec3::new(105.0, -5.0, 5.0)));
+        // Its edges are 3D edges of the solid, not its plan drawn flat.
+        assert!(scene.segs.iter().all(|g| g.solid.is_some()), "flat segments of the block's solid");
+    }
+
+    #[test]
+    fn faces_off_the_view_hide_nothing_at_its_border() {
+        // Review of PR 20: triangles off screen were clamped into the border cells, where they
+        // hid edges they are nowhere near.
+        let mut s = draftcraft_engine::Session::new();
+        s.execute("box", &serde_json::json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap();
+        let st = s.state().unwrap();
+        let scene = Scene::build(&st.doc, (st.uid, st.revision));
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        // Looking down at a spot far to the right of the box: the box is off the left edge.
+        let v = View3d::new(Vec3::new(0.0, 0.0, -1.0), Vec2::new(1000.0, 5.0), 40.0, VisualStyle::Hidden).unwrap();
+        let pr = Proj::new(&v, rect);
+        assert!(pr.screen(Vec3::new(10.0, 5.0, 10.0)).x < 0.0);
+        let occ = Occluders::new(&scene, &pr, rect, 1e-5);
+        assert!(occ.cells.iter().all(Vec::is_empty));
+        assert!(occ.cell(pos2(-5.0, 300.0)).is_none() && occ.cell(pos2(10_000.0, 300.0)).is_none());
+        assert!(!occ.hidden(pos2(1.0, 300.0), 1e9));
+    }
+
+    #[test]
+    fn a_repaint_reuses_what_was_painted() {
+        // Review of PR 20: every repaint sorted the faces and cut the edges again.
+        let mut s = draftcraft_engine::Session::new();
+        s.execute("box", &serde_json::json!({"corner1": [0, 0], "corner2": [10, 10], "height": 10})).unwrap();
+        let st = s.state().unwrap();
+        let scene = Scene::build(&st.doc, (st.uid, st.revision));
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let v = View3d::new(Vec3::new(-1.0, 1.0, -1.0), Vec2::new(0.0, 5.0), 40.0, VisualStyle::Conceptual).unwrap();
+        let pr = Proj::new(&v, rect);
+        let none = std::collections::HashSet::new();
+        let key = PaintKey { scene: scene.key, view: v, rect, selection: selection_key(&none), bg: Color32::BLACK };
+        let ctx = egui::Context::default();
+        let a = painted(&ctx, &scene, &key, &pr, &none, Color32::WHITE);
+        let b = painted(&ctx, &scene, &key, &pr, &none, Color32::WHITE);
+        assert!(Arc::ptr_eq(&a.shapes, &b.shapes));
+        assert!(a.occ.is_some());
+        // Another view paints again.
+        let key2 = PaintKey { view: v.orbited(10.0, 0.0).unwrap(), ..key };
+        let c = painted(&ctx, &scene, &key2, &pr, &none, Color32::WHITE);
+        assert!(!Arc::ptr_eq(&a.shapes, &c.shapes));
     }
 }

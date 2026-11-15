@@ -126,8 +126,12 @@ enum Make {
     Revolve { a: Vec2, b: Vec2, angle: f64 },
 }
 
-/// Make solids from the profiles among `hs`; erase the profiles unless `keep`.
+/// Make solids from the profiles among `hs`, all or none; erase the profiles unless `keep`.
 fn make(s: &mut Session, hs: &[Handle], how: Make, keep: bool) -> Result<Value> {
+    s.all_or_nothing(|s| make_all(s, hs, how, keep))
+}
+
+fn make_all(s: &mut Session, hs: &[Handle], how: Make, keep: bool) -> Result<Value> {
     let mut work = Vec::new();
     {
         let d = s.doc()?;

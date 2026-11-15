@@ -5,7 +5,10 @@
 //! reopens the mesh as the solid; other programs, and DraftCraft without solids, see the mesh.
 //!
 //! A mesh larger than a polyface's 16-bit counts is written as several meshes in a row; the first
-//! carries the record, which says how many there are.
+//! carries the record, which says how many there are and holds a fingerprint of each (counts, face
+//! indices, bounding box). The solid comes back only when every mesh still matches its
+//! fingerprint: a mesh edited, moved or copied elsewhere (AutoCAD copies the record with it) stays
+//! the mesh it now is, and no other mesh is ever taken for a part.
 
 use std::collections::HashMap;
 
@@ -15,7 +18,7 @@ use draftcraft_geom::Vec3;
 /// The extension dictionary key of the record.
 pub(crate) const KEY: &str = "DRAFTCRAFT_SOLID";
 /// The record's first group (1): what it is and its layout's version.
-pub(crate) const MARK: &str = "DraftCraft solid 1";
+pub(crate) const MARK: &str = "DraftCraft solid 2";
 /// Bytes per binary chunk (group 310), as AutoCAD writes them.
 const CHUNK: usize = 127;
 /// Most vertices or faces of one polyface mesh (16-bit counts).
@@ -29,8 +32,17 @@ pub(crate) fn meshes(so: &Solid3d) -> Vec<PolyfaceMesh> {
     // Edges inside a face: shared by two triangles of that face.
     let key = |p: Vec3| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
     let mut shared: HashMap<((u64, u64, u64), (u64, u64, u64), u32), u32> = HashMap::new();
-    let tris: Vec<([Vec3; 3], u32)> =
-        look.triangles.iter().enumerate().filter_map(|(i, t)| Some((look.triangle(t)?, look.tri_face.get(i).copied().unwrap_or(u32::MAX)))).collect();
+    // A mirrored placement turns the triangles inside out: wind them back.
+    let flip = so.mirrored();
+    let tris: Vec<([Vec3; 3], u32)> = look
+        .triangles
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| {
+            let [a, b, c] = look.triangle(t)?;
+            Some((if flip { [a, c, b] } else { [a, b, c] }, look.tri_face.get(i).copied().unwrap_or(u32::MAX)))
+        })
+        .collect();
     let edge = |a: Vec3, b: Vec3, f: u32| {
         let (ka, kb) = (key(a), key(b));
         if ka <= kb { (ka, kb, f) } else { (kb, ka, f) }
@@ -67,9 +79,61 @@ pub(crate) fn meshes(so: &Solid3d) -> Vec<PolyfaceMesh> {
     out
 }
 
-/// The record's groups after its cloning flag (280): mark, mesh count, counts, placement, body.
-pub(crate) fn record_groups(so: &Solid3d, parts: usize) -> Vec<(i32, Value)> {
-    let mut g = vec![(1, Value::S(MARK.into())), (90, Value::I(i64::try_from(parts).unwrap_or(1)))];
+/// A mesh's fingerprint as the record keeps it (group 300): vertex count, face count, a hash of
+/// the faces' indices and the bounding box, of the faces a file keeps (the others are dropped on
+/// write and on read).
+pub(crate) fn fingerprint(m: &PolyfaceMesh) -> String {
+    let (v, f, hash, lo, hi) = print_of(m);
+    format!("{v} {f} {hash:016X} {} {} {} {} {} {}", lo.x, lo.y, lo.z, hi.x, hi.y, hi.z)
+}
+
+/// Whether a mesh still matches a fingerprint from a record: the same counts and faces, and the
+/// same box up to the digits a file keeps.
+#[cfg_attr(not(feature = "solids"), allow(dead_code))]
+pub(crate) fn matches(print: &str, m: &PolyfaceMesh) -> bool {
+    let w: Vec<&str> = print.split_whitespace().collect();
+    if w.len() != 9 {
+        return false;
+    }
+    let (v, f, hash, lo, hi) = print_of(m);
+    let num = |i: usize| w.get(i).and_then(|t| t.parse::<f64>().ok()).filter(|x| x.is_finite());
+    let same_ints = w.first().and_then(|t| t.parse::<usize>().ok()) == Some(v)
+        && w.get(1).and_then(|t| t.parse::<usize>().ok()) == Some(f)
+        && w.get(2).and_then(|t| u64::from_str_radix(t, 16).ok()) == Some(hash);
+    if !same_ints {
+        return false;
+    }
+    let got = [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z];
+    got.iter().enumerate().all(|(i, g)| num(i + 3).is_some_and(|x| (x - g).abs() <= 1e-9 * (1.0 + x.abs().max(g.abs()))))
+}
+
+fn print_of(m: &PolyfaceMesh) -> (usize, usize, u64, Vec3, Vec3) {
+    // FNV-1a over the kept faces' indices.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut f = 0usize;
+    for face in m.faces.iter().filter(|q| m.face3d(q).is_some()) {
+        f += 1;
+        for b in face.iter().flat_map(|i| i.to_le_bytes()) {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut hi = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in &m.vertices {
+        lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+        hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+    }
+    if m.vertices.is_empty() {
+        (lo, hi) = (Vec3::ZERO, Vec3::ZERO);
+    }
+    (m.vertices.len(), f, hash, lo, hi)
+}
+
+/// The record's groups after its cloning flag (280): mark, mesh count, counts, placement, body,
+/// and each mesh's fingerprint.
+pub(crate) fn record_groups(so: &Solid3d, parts: &[PolyfaceMesh]) -> Vec<(i32, Value)> {
+    let mut g = vec![(1, Value::S(MARK.into())), (90, Value::I(i64::try_from(parts.len()).unwrap_or(1)))];
     g.push((91, Value::I(i64::from(so.faces))));
     g.push((92, Value::I(i64::from(so.edges))));
     g.push((140, Value::F(so.volume)));
@@ -81,6 +145,9 @@ pub(crate) fn record_groups(so: &Solid3d, parts: usize) -> Vec<(i32, Value)> {
     g.push((93, Value::I(i64::try_from(so.body.len()).unwrap_or(0))));
     for c in so.body.chunks(CHUNK) {
         g.push((310, Value::S(c.iter().map(|b| format!("{b:02X}")).collect())));
+    }
+    for m in parts {
+        g.push((300, Value::S(fingerprint(m))));
     }
     g
 }
@@ -105,17 +172,23 @@ mod recover {
 
     use super::{KEY, MARK};
 
+    use draftcraft_solid::Body;
+
+    /// Most triangles of an exact look worked out on open (larger ones keep the mesh's look).
+    const MAX_LOOK_TRIANGLES: usize = 200_000;
+
     /// Most bytes of one solid's body read back (the writer has no such solids; a file may claim it).
     const MAX_BODY: usize = 256 << 20;
 
     /// What a record holds.
     struct Record {
-        parts: usize,
         faces: u32,
         edges: u32,
         volume: f64,
         placement: Mat4,
         body: Vec<u8>,
+        /// One fingerprint per mesh, in order.
+        prints: Vec<String>,
     }
 
     fn parse(tags: &[RawTag]) -> Option<Record> {
@@ -152,7 +225,11 @@ mod recover {
         let parts = usize::try_from(int(90).unwrap_or(1)).ok().filter(|n| (1..=10_000).contains(n))?;
         let volume = tags.iter().find(|t| t.code == 140).and_then(|t| t.value.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0);
         let count = |code| u32::try_from(int(code).unwrap_or(0)).unwrap_or(0);
-        Some(Record { parts, faces: count(91), edges: count(92), volume, placement: Mat4 { m }, body })
+        let prints: Vec<String> = tags.iter().filter(|t| t.code == 300).map(|t| t.value.trim().to_string()).take(parts.saturating_add(1)).collect();
+        if prints.len() != parts {
+            return None;
+        }
+        Some(Record { faces: count(91), edges: count(92), volume, placement: Mat4 { m }, body, prints })
     }
 
     /// The record an entity's extension dictionary holds under [`KEY`]: the dictionary's and the
@@ -230,6 +307,18 @@ mod recover {
         l
     }
 
+    /// The exact look of a body placed by `placement`, worked out from the body; `None` when the
+    /// body doesn't decode or is too detailed to draw.
+    fn exact_look(body: &[u8]) -> Option<SolidLook> {
+        let d = Body::decode(body).ok()?.display(0.0).ok()?;
+        (d.triangles.len() <= MAX_LOOK_TRIANGLES).then_some(SolidLook {
+            wires: d.wires,
+            positions: d.positions,
+            triangles: d.triangles,
+            tri_face: d.tri_face,
+        })
+    }
+
     fn recover_store(st: &mut EntityStore, f: &mut Foreign) {
         let order: Vec<Handle> = st.iter().map(|e| e.handle).collect();
         let mut gone: Vec<Handle> = Vec::new();
@@ -241,20 +330,48 @@ mod recover {
             let EntityKind::PolyfaceMesh(first) = &e.kind else { continue };
             let Some((dh, xh, rec)) = find(f, *h) else { continue };
             let Some(inv) = inverse(&rec.placement) else { continue };
-            // The other meshes of the solid follow it.
+            // The mesh must still be the one written with the record: one edited, moved or copied
+            // elsewhere stays a mesh.
+            if !rec.prints.first().is_some_and(|p| super::matches(p, first)) {
+                continue;
+            }
+            // The other meshes of the solid: each the mesh that matches its fingerprint, looked
+            // for after the first and then anywhere, never one that is a part already or a
+            // solid's own first mesh.
             let mut parts: Vec<Handle> = Vec::new();
-            for next in order.iter().skip(i + 1).take(rec.parts.saturating_sub(1)) {
-                if matches!(st.get(*next).map(|e| &e.kind), Some(EntityKind::PolyfaceMesh(_))) {
-                    parts.push(*next);
+            let mut complete = true;
+            for print in rec.prints.iter().skip(1) {
+                let after = order.iter().skip(i + 1).chain(order.iter().take(i));
+                let found = after.copied().find(|c| {
+                    c != h
+                        && !gone.contains(c)
+                        && !parts.contains(c)
+                        && find(f, *c).is_none()
+                        && matches!(st.get(*c).map(|e| &e.kind), Some(EntityKind::PolyfaceMesh(m)) if super::matches(print, m))
+                });
+                match found {
+                    Some(c) => parts.push(c),
+                    None => {
+                        complete = false;
+                        break;
+                    }
                 }
             }
-            let mut meshes: Vec<&PolyfaceMesh> = vec![first];
-            for p in &parts {
-                if let Some(EntityKind::PolyfaceMesh(m)) = st.get(*p).map(|e| &e.kind) {
-                    meshes.push(m);
-                }
+            if !complete {
+                continue;
             }
-            let look = look(&meshes, &inv);
+            let look = match exact_look(&rec.body) {
+                Some(l) => l,
+                None => {
+                    let mut meshes: Vec<&PolyfaceMesh> = vec![first];
+                    for p in &parts {
+                        if let Some(EntityKind::PolyfaceMesh(m)) = st.get(*p).map(|e| &e.kind) {
+                            meshes.push(m);
+                        }
+                    }
+                    look(&meshes, &inv)
+                }
+            };
             let so = Solid3d {
                 body: Arc::new(rec.body),
                 placement: rec.placement,
@@ -364,6 +481,26 @@ mod tests {
         assert!(m.vertices.iter().any(|p| (p.x - 1.0e6).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9));
     }
 
+    #[test]
+    fn a_mirrored_solid_s_mesh_faces_out() {
+        // Review of PR 20: a mirrored solid's mesh was written inside out.
+        for mirror in [false, true] {
+            let mut so = tetra(10);
+            if mirror {
+                so.placement.m[0][0] = -1.0;
+            }
+            assert_eq!(so.mirrored(), mirror);
+            let m = &super::meshes(&so)[0];
+            let mid = m.vertices.iter().fold(Vec3::ZERO, |a, p| a + *p) * 0.25;
+            for f in &m.faces {
+                let c: Vec<Vec3> = f.iter().take(3).map(|i| m.vertices[i.unsigned_abs() as usize - 1]).collect();
+                let n = (c[1] - c[0]).cross(c[2] - c[0]);
+                let centre = (c[0] + c[1] + c[2]) * (1.0 / 3.0);
+                assert!(n.dot(centre - mid) > 0.0, "mirror {mirror}: {f:?} faces in");
+            }
+        }
+    }
+
     #[cfg(feature = "solids")]
     #[test]
     fn a_solid_comes_back_from_dxf_and_dwg() {
@@ -440,5 +577,88 @@ mod tests {
             let back = crate::read(bad.as_bytes(), "bad.dxf").unwrap();
             assert!(matches!(&only_kind(&back)[0], EntityKind::PolyfaceMesh(_)), "case {i}");
         }
+    }
+
+    /// The large tetra solid of [`a_large_solid_is_several_meshes_and_one_solid`]: two meshes.
+    #[cfg(feature = "solids")]
+    fn large() -> Solid3d {
+        let mut so = tetra(100);
+        let mut look = SolidLook::default();
+        for i in 0..40_000u32 {
+            let x = f64::from(i);
+            look.positions.extend([Vec3::new(x, 0.0, 0.0), Vec3::new(x + 0.5, 1.0, 0.0), Vec3::new(x, 0.0, 1.0)]);
+            look.triangles.push([3 * i, 3 * i + 1, 3 * i + 2]);
+            look.tri_face.push(i);
+        }
+        so.look = Arc::new(look);
+        so
+    }
+
+    #[cfg(feature = "solids")]
+    #[test]
+    fn a_mesh_edited_elsewhere_stays_the_mesh() {
+        // Review of PR 20: a stale record brought the old solid back over edits made in another
+        // program. Moving the far corners of the mesh changes its box: it stays a mesh.
+        let text = String::from_utf8(crate::write(&drawing_with(tetra(300)), "solid.dxf").unwrap()).unwrap().replace("\r\n", "\n");
+        let edited = text.replace("\n1000001.0\n", "\n1000002.0\n");
+        assert_ne!(edited, text);
+        let back = crate::read(edited.as_bytes(), "edited.dxf").unwrap();
+        let kinds = only_kind(&back);
+        assert_eq!(kinds.len(), 1);
+        let EntityKind::PolyfaceMesh(m) = &kinds[0] else { panic!("{:?}", kinds[0]) };
+        assert!(m.vertices.iter().any(|p| (p.x - 1_000_002.0).abs() < 1e-9), "the edit is kept");
+        // A mesh moved as a whole (as AutoCAD's COPY moves the copy and its record) as well.
+        let moved = text.replace("\n1000000.0\n", "\n1000010.0\n").replace("\n1000001.0\n", "\n1000011.0\n");
+        // Put the placement back: only the mesh moved.
+        let moved = moved.replacen("\n 40\n1000010.0\n", "\n 40\n1000000.0\n", 1);
+        let back = crate::read(moved.as_bytes(), "moved.dxf").unwrap();
+        assert!(matches!(&only_kind(&back)[0], EntityKind::PolyfaceMesh(_)));
+    }
+
+    #[cfg(feature = "solids")]
+    #[test]
+    fn a_missing_part_takes_no_other_mesh() {
+        // Review of PR 20: the parts were the meshes that followed the first, whatever they were,
+        // and were deleted. With one part gone, no solid comes back and every mesh stays.
+        let mut d = drawing_with(large());
+        let other = draftcraft_doc::PolyfaceMesh {
+            vertices: vec![Vec3::ZERO, Vec3::new(5.0, 0.0, 0.0), Vec3::new(0.0, 5.0, 0.0)],
+            faces: vec![[1, 2, 3, 0]],
+        };
+        d.add(&draftcraft_doc::Space::Model, draftcraft_doc::Common::default(), EntityKind::PolyfaceMesh(other.clone())).unwrap();
+        let text = String::from_utf8(crate::write(&d, "big.dxf").unwrap()).unwrap().replace("\r\n", "\n");
+        // Whole, it is the solid and the other mesh.
+        let back = crate::read(text.as_bytes(), "big.dxf").unwrap();
+        let kinds = only_kind(&back);
+        assert_eq!(kinds.len(), 2, "{}", kinds.len());
+        assert!(matches!(&kinds[0], EntityKind::Solid3d(_)));
+        assert!(matches!(&kinds[1], EntityKind::PolyfaceMesh(m) if m.vertices == other.vertices));
+        // Cut the second POLYLINE (one of the solid's other meshes) out.
+        let tag = "\n  0\nPOLYLINE\n";
+        let starts: Vec<usize> = text.match_indices(tag).map(|(i, _)| i).collect();
+        assert!(starts.len() >= 3, "{}", starts.len());
+        let cut = text[..starts[1]].to_string() + &text[starts[2]..];
+        let back = crate::read(cut.as_bytes(), "cut.dxf").unwrap();
+        let kinds = only_kind(&back);
+        assert_eq!(kinds.len(), starts.len() - 1, "every mesh left stays");
+        assert!(kinds.iter().all(|k| matches!(k, EntityKind::PolyfaceMesh(_))), "no solid from part of it");
+        assert!(matches!(kinds.last(), Some(EntityKind::PolyfaceMesh(m)) if m.vertices == other.vertices));
+    }
+
+    #[cfg(feature = "solids")]
+    #[test]
+    fn an_interim_solid_opens_with_the_look_of_its_body() {
+        // Review of PR 20: opening a file re-tessellated every solid. The look is now worked out
+        // only for the solids that come back from their meshes, as they are read.
+        let body = draftcraft_solid::box_solid(Vec3::ZERO, Vec3::new(2.0, 3.0, 4.0)).unwrap();
+        let exact = body.display(0.0).unwrap();
+        let mut so = tetra(1);
+        so.body = Arc::new(body.encode().unwrap());
+        so.placement = Mat4::IDENTITY;
+        let text = crate::dxf_write::write_interim(&drawing_with(so));
+        let back = crate::read(text.as_bytes(), "box.dxf").unwrap();
+        let EntityKind::Solid3d(b) = &only_kind(&back)[0] else { panic!("not a solid") };
+        assert_eq!(b.look.triangles, exact.triangles);
+        assert_eq!(b.look.wires.len(), exact.wires.len());
     }
 }
