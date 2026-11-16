@@ -102,26 +102,32 @@ fn common_full(w: &mut W, e: &Entity, owner: &str, paper: bool, subclass: &str, 
     if paper {
         w.i(67, 1);
     }
-    layer_and_props(w, &e.common, None);
-    if (e.common.ltscale - 1.0).abs() > 1e-12 {
-        w.f(48, e.common.ltscale);
+    entity_props(w, &e.common);
+    if !subclass.is_empty() {
+        w.s(100, subclass);
     }
-    if !e.common.visible {
+}
+
+/// An entity's property groups after its `AcDbEntity` marker: layer, linetype, colour,
+/// lineweight, linetype scale, visibility, transparency and plot style.
+pub(super) fn entity_props(w: &mut W, c: &Common) {
+    layer_and_props(w, c, None);
+    if (c.ltscale - 1.0).abs() > 1e-12 {
+        w.f(48, c.ltscale);
+    }
+    if !c.visible {
         w.i(60, 1);
     }
-    if let Some(v) = transparency_440(e.common.transparency) {
+    if let Some(v) = transparency_440(c.transparency) {
         w.i(440, v);
     }
     // ByBlock is the plot style name type 1 (ByLayer, 0, is the default and left out).
-    if e.common.plot_style.trim().eq_ignore_ascii_case("byblock") {
+    if c.plot_style.trim().eq_ignore_ascii_case("byblock") {
         w.i(380, 1);
     }
     // A named plot style (not ByLayer/ByBlock): its placeholder object.
-    if let Some(h) = w.pstyles.get(&e.common.plot_style.trim().to_ascii_uppercase()).cloned() {
+    if let Some(h) = w.pstyles.get(&c.plot_style.trim().to_ascii_uppercase()).cloned() {
         w.s(390, h);
-    }
-    if !subclass.is_empty() {
-        w.s(100, subclass);
     }
 }
 

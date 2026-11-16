@@ -462,3 +462,153 @@ fn autocad_regions_open_as_regions_in_every_format() {
         }
     }
 }
+
+/// The ACIS description a kept solid or region holds: its SAT text (unscrambled) or its SAB.
+fn description(src: &draftcraft_doc::foreign::AcisSource) -> (Option<String>, Option<Vec<u8>>) {
+    let sat = super::sat_text(&src.entity.tags).map(|t| acis::scramble(&t.iter().map(|&b| char::from(b)).collect::<String>()));
+    (sat, src.sab.clone())
+}
+
+/// The ACIS version a description is in: the first number of its SAT header, or of SAB's.
+fn acis_version(src: &draftcraft_doc::foreign::AcisSource) -> Option<String> {
+    let (sat, _) = description(src);
+    sat.and_then(|s| s.split_whitespace().next().map(str::to_string))
+}
+
+#[test]
+fn an_unedited_autocad_solid_or_region_saves_as_autocad_wrote_it() {
+    for (name, out, v) in [
+        ("solids-basic-2000.dxf", "a.dxf", Version::R2000),
+        ("solids-basic-2000.dwg", "a.dwg", Version::R2000),
+        ("solids-basic-2010.dxf", "a.dxf", Version::R2010),
+        ("solids-free-2010.dxf", "a.dxf", Version::R2010),
+        ("solids-basic-2013.dwg", "a.dwg", Version::R2013),
+        ("solids-basic-2018.dxf", "a.dxf", Version::R2018),
+        ("solids-basic-2018.dwg", "a.dwg", Version::R2018),
+        ("solids-edit-2018.dwg", "a.dwg", Version::R2018),
+        ("solids-free-2018.dwg", "a.dwg", Version::R2018),
+        ("regions-2000.dxf", "a.dxf", Version::R2000),
+        ("regions-2010.dxf", "a.dxf", Version::R2010),
+        ("regions-2018.dwg", "a.dwg", Version::R2018),
+        // A newer version of the same form reads the older description.
+        ("solids-basic-2000.dxf", "a.dxf", Version::R2010),
+        ("solids-basic-2013.dwg", "a.dwg", Version::R2018),
+    ] {
+        let at = format!("{name} → {out} {v:?}");
+        let d = crate::read(&data(name), name).expect("read");
+        assert!(!d.foreign.acis.is_empty(), "{at}");
+        let bytes = crate::write_with(&d, out, &crate::SaveOptions { version: Some(v), binary: false }).expect("write");
+        let back = crate::read(&bytes, out).expect("read back");
+        for (h, src) in &d.foreign.acis {
+            let again = back.foreign.acis.get(h).unwrap_or_else(|| panic!("{at}: {h:?} not read back as a solid or region"));
+            assert_eq!(description(again), description(src), "{at}: {h:?}");
+            if crate::save_version(&d) == v {
+                assert_eq!(modeler_groups(again), modeler_groups(src), "{at}: {h:?}");
+            }
+        }
+        assert!(back.read_notes.iter().all(|n| !n.contains("ACIS")), "{at}: {:?}", back.read_notes);
+    }
+}
+
+#[test]
+fn an_edited_copied_or_down_saved_solid_gets_a_new_description() {
+    let name = "solids-basic-2010.dxf";
+    let mut d = crate::read(&data(name), name).expect("read");
+    let first: Vec<draftcraft_doc::Handle> = d.model.iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_))).map(|e| e.handle).collect();
+    let [moved, copied, ..] = first[..] else { panic!("{name}: {first:?}") };
+    assert!(d.foreign.acis.values().all(|s| acis_version(s).as_deref() != Some("400")), "AutoCAD 2010 writes a newer ACIS than 400");
+    d.model.modify(moved, |e| {
+        if let EntityKind::Solid3d(so) = &mut e.kind {
+            so.transform(&draftcraft_geom::Mat3::translate(draftcraft_geom::Vec2::new(5.0, 0.0)));
+        }
+    });
+    let copy = d.model.get(copied).map(|e| e.kind.clone()).expect("solid");
+    let copy = d.add(&Space::Model, Common::default(), copy).expect("copy");
+    let bytes = crate::write_with(&d, "a.dxf", &crate::SaveOptions { version: Some(Version::R2010), binary: false }).expect("write");
+    let back = crate::read(&bytes, "a.dxf").expect("read back");
+    for (h, src) in &back.foreign.acis {
+        let new = *h == moved || *h == copy;
+        assert_eq!(acis_version(src).as_deref() == Some("400"), new, "{h:?}");
+        if !new {
+            assert_eq!(description(src), description(&d.foreign.acis[h]), "{h:?}");
+        }
+    }
+    let mut want = BASIC.to_vec();
+    want[0].1[0] += 5.0;
+    want.push(BASIC[1]);
+    close4(&solids(&back), &want, "moved and copied");
+    // A 2018 description is newer than a 2010 file holds: written anew.
+    let d = crate::read(&data("solids-basic-2018.dwg"), "a.dwg").expect("read");
+    let bytes = crate::write_with(&d, "a.dxf", &crate::SaveOptions { version: Some(Version::R2010), binary: false }).expect("write");
+    let back = crate::read(&bytes, "a.dxf").expect("read back");
+    assert!(!back.foreign.acis.is_empty() && back.foreign.acis.values().all(|s| acis_version(s).as_deref() == Some("400")));
+}
+
+/// A modeler entity's own groups as kept: from its `AcDbModelerGeometry` marker, without xdata;
+/// a handle (its history, 350) as whether it names an object (saving renumbers kept objects).
+fn modeler_groups(src: &draftcraft_doc::foreign::AcisSource) -> Vec<draftcraft_doc::RawTag> {
+    let own = src.entity.tags.iter().take_while(|t| t.code < 1000);
+    own.skip_while(|t| !(t.code == 100 && t.value.trim() == "AcDbModelerGeometry"))
+        .map(|t| match t.code {
+            330..=369 => draftcraft_doc::RawTag { code: t.code, value: (t.value.trim() != "0").to_string() },
+            _ => t.clone(),
+        })
+        .collect()
+}
+
+#[test]
+fn solids_and_regions_keep_their_properties() {
+    use draftcraft_doc::color::Color;
+    let props = Common {
+        color: Color::Index(1),
+        lineweight: draftcraft_doc::Lineweight::Mm100(50),
+        transparency: draftcraft_doc::Transparency::Percent(40),
+        ltscale: 2.0,
+        ..Common::default()
+    };
+    let check = |what: &str, d: &Drawing, want: &Common| {
+        for v in [Version::R2000, Version::R2010, Version::R2018] {
+            let dxf = crate::write_with(d, "p.dxf", &crate::SaveOptions { version: Some(v), binary: false }).expect("dxf");
+            let (dwg, _) = crate::write_dwg_own(d, v).expect("dwg");
+            for (bytes, name) in [(dxf, "p.dxf"), (dwg, "p.dwg")] {
+                let back = crate::read(&bytes, name).expect("read");
+                let got: Vec<&Common> =
+                    back.model.iter().filter(|e| matches!(e.kind, EntityKind::Solid3d(_) | EntityKind::Region(_))).map(|e| &e.common).collect();
+                assert!(!got.is_empty(), "{what} {name} {v:?}");
+                for c in got {
+                    // DWG has transparency from 2004.
+                    let t = if name.ends_with(".dwg") && v < Version::R2004 { draftcraft_doc::Transparency::ByLayer } else { want.transparency };
+                    let same = (c.color, c.lineweight, c.transparency, c.ltscale) == (want.color, want.lineweight, t, want.ltscale);
+                    assert!(same, "{what} {name} {v:?}: {c:?}");
+                }
+            }
+        }
+    };
+    // Made in DraftCraft.
+    let (mut d, _) = drawing();
+    let (r, _) = regions_drawing();
+    for e in r.model.iter() {
+        d.add(&Space::Model, e.common.clone(), e.kind.clone()).expect("add");
+    }
+    let hs: Vec<draftcraft_doc::Handle> = d.model.iter().map(|e| e.handle).collect();
+    for h in hs {
+        d.model.modify(h, |e| e.common = Common { layer: e.common.layer.clone(), ..props.clone() });
+    }
+    check("new", &d, &props);
+    // Read from AutoCAD, given new properties: its description is still AutoCAD's.
+    for name in ["solids-basic-2018.dwg", "regions-2000.dxf"] {
+        let mut d = crate::read(&data(name), name).expect("read");
+        let hs: Vec<draftcraft_doc::Handle> = d.foreign.acis.keys().copied().collect();
+        for h in hs {
+            d.model.modify(h, |e| e.common = Common { layer: e.common.layer.clone(), ..props.clone() });
+        }
+        check(name, &d, &props);
+        let v = crate::save_version(&d);
+        let out = if name.ends_with(".dwg") { "a.dwg" } else { "a.dxf" };
+        let back =
+            crate::read(&crate::write_with(&d, out, &crate::SaveOptions { version: Some(v), binary: false }).expect("write"), out).expect("read");
+        for (h, src) in &d.foreign.acis {
+            assert_eq!(back.foreign.acis.get(h).map(modeler_groups), Some(modeler_groups(src)), "{name}: {h:?}");
+        }
+    }
+}

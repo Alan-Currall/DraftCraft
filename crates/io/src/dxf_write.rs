@@ -51,6 +51,23 @@ struct W {
     taken: std::collections::HashSet<u64>,
 }
 
+/// An entity's `AcDbEntity` marker and property groups as this writer writes them (layer,
+/// linetype, colour, lineweight, linetype scale, visibility, transparency), for an entity saved as
+/// groups of its own: a 3D solid or region saved as AutoCAD's 3DSOLID or REGION (`solid_acis`).
+/// A named plot style is left out (its placeholder's handle is the writer's).
+pub(crate) fn property_groups(c: &Common) -> Vec<draftcraft_doc::RawTag> {
+    let mut w = W {
+        t: vec![Tag::s(100, "AcDbEntity")],
+        next: 0,
+        pstyles: HashMap::new(),
+        layers: HashMap::new(),
+        reactors: HashMap::new(),
+        taken: std::collections::HashSet::new(),
+    };
+    common::entity_props(&mut w, c);
+    w.t.iter().map(|t| draftcraft_doc::RawTag { code: t.code, value: t.str() }).collect()
+}
+
 impl W {
     fn s(&mut self, c: i32, v: impl Into<String>) {
         self.t.push(Tag::s(c, v));

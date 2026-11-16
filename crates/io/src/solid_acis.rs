@@ -10,6 +10,10 @@
 //!   3DSOLID for the file's version ([`for_saving`]); one it can't (a body with free-form
 //!   surfaces, not written as ACIS yet) keeps the interim form, a mesh with the exact body
 //!   (`solid_file`).
+//! - A solid or region read from a file and saved unchanged is written with AutoCAD's own
+//!   description (kept in [`draftcraft_doc::foreign::AcisSource`]) when the file's version holds
+//!   it as it is: same form, no older ACIS reader. Its history, face colours and attributes then
+//!   survive the round trip; an edited, copied or down-saved one gets a new description.
 //! - A REGION (a flat sheet of ACIS faces) opens as a DraftCraft region when its faces lie on
 //!   the XY plane and its edges are lines and arcs, and a region is saved as a REGION. A BODY
 //!   holding a solid opens as a solid that is saved as a BODY again.
@@ -18,7 +22,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use draftcraft_doc::foreign::{data_store_owner, data_store_records};
+use draftcraft_doc::foreign::{AcisSource, data_store_owner, data_store_records};
 use draftcraft_doc::{Drawing, Entity, EntityKind, EntityStore, Handle, HatchLoop, RawTag, Region, Solid3d, SolidLook, Unknown};
 use draftcraft_dxf::Version;
 use draftcraft_geom::Mat4;
@@ -184,7 +188,9 @@ fn adopt_one(u: &Unknown, sab: Option<&Vec<u8>>) -> Result<Solid3d, String> {
 /// solid, and every REGION into a DraftCraft region.
 /// A record of the data store that became a solid is dropped (saving writes the solid's own).
 pub(crate) fn adopt(d: &mut Drawing) {
-    let stored = stored_sab(&d.foreign.data_store);
+    let mut stored = stored_sab(&d.foreign.data_store);
+    let acadver = d.header.get("ACADVER").and_then(draftcraft_doc::HVal::as_str).unwrap_or_default().to_string();
+    let mut sources: Vec<(Handle, AcisSource)> = Vec::new();
     let mut adopted: Vec<Handle> = Vec::new();
     let mut failed: BTreeMap<(Modeler, String), usize> = BTreeMap::new();
     let mut n = 0usize;
@@ -204,7 +210,13 @@ pub(crate) fn adopt(d: &mut Drawing) {
             };
             match made {
                 Ok(k) => {
-                    let _ = st.modify(h, |e| e.kind = k);
+                    // AutoCAD's own description moves to the source, for saving it back.
+                    let read = k.clone();
+                    let mut was = None;
+                    let _ = st.modify(h, |e| was = Some(std::mem::replace(&mut e.kind, k)));
+                    if let Some(EntityKind::Unknown(entity)) = was {
+                        sources.push((h, AcisSource { acadver: acadver.clone(), entity, sab: stored.remove(&h), read }));
+                    }
                     adopted.push(h);
                 }
                 Err(why) => *failed.entry((kind, why)).or_default() += 1,
@@ -229,6 +241,7 @@ pub(crate) fn adopt(d: &mut Drawing) {
             kept.clear();
         }
         f.data_store = kept;
+        f.acis.extend(sources);
     }
     for ((kind, why), count) in failed {
         let what = kind.count(count);
@@ -339,6 +352,39 @@ fn as_region(e: &Entity, r: &Region, version: Version) -> Option<(Unknown, Optio
     Some((Unknown { dxf_type: "REGION".into(), tags }, sab))
 }
 
+/// Whether entity `kind` is still what it was read as (`read`): the same body where it was, or
+/// the same region.
+fn unchanged(kind: &EntityKind, read: &EntityKind) -> bool {
+    match (kind, read) {
+        (EntityKind::Solid3d(a), EntityKind::Solid3d(b)) => a.body == b.body && a.placement == b.placement && a.body_entity == b.body_entity,
+        (EntityKind::Region(a), EntityKind::Region(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// The entity AutoCAD saved for `e`, and its SAB for the data store, when `e` is still as it was
+/// read and a file of `version` holds that description as it is: in the same form (SAT in the
+/// entity up to 2010, SAB in the data store from 2013) and in a version no older than the file it
+/// came from (an older AutoCAD discards a newer ACIS description).
+fn as_read(e: &Entity, src: &AcisSource, version: Version) -> Option<(Unknown, Option<Vec<u8>>)> {
+    let from = Version::for_acadver(src.acadver.trim())?;
+    let sab = version >= Version::R2013;
+    if (from >= Version::R2013) != sab || src.sab.is_some() != sab || version < from || !unchanged(&e.kind, &src.read) {
+        return None;
+    }
+    // Its modeler groups: the entity's properties are the drawing's now, its xdata the kept
+    // foreign data's.
+    let own: Vec<&RawTag> = src.entity.tags.iter().take_while(|t| t.code < 1000).collect();
+    let from = own.iter().position(|t| t.code == 100 && t.value.trim() == "AcDbModelerGeometry")?;
+    let mut u = Unknown { dxf_type: src.entity.dxf_type.clone(), tags: own.into_iter().skip(from).cloned().collect() };
+    // From 2007 a 3D solid's groups end with its history (none known here), as `as_3dsolid` writes them.
+    let solid = u.dxf_type.trim().eq_ignore_ascii_case("3DSOLID");
+    if solid && version >= Version::R2007 && !u.tags.iter().any(|t| t.code == 100 && t.value.trim() == "AcDb3dSolid") {
+        u.tags.extend([tag(100, "AcDb3dSolid"), tag(350, "0")]);
+    }
+    Some((u, src.sab.clone()))
+}
+
 /// `d` with every solid the ACIS writer can describe as AutoCAD's own 3DSOLID (or BODY) for a file
 /// of `version`, and every region as a REGION; `d` itself when it has none.
 pub(crate) fn for_saving(d: &Drawing, version: Version) -> Cow<'_, Drawing> {
@@ -347,6 +393,8 @@ pub(crate) fn for_saving(d: &Drawing, version: Version) -> Cow<'_, Drawing> {
         return Cow::Borrowed(d);
     }
     let mut d = d.clone();
+    // AutoCAD's own descriptions, for the solids and regions still as they were read.
+    let read = Arc::clone(&d.foreign);
     let mut sabs: Vec<(Handle, Vec<u8>)> = Vec::new();
     let mut n = 0usize;
     for_each_store(&mut d, |st| {
@@ -356,15 +404,22 @@ pub(crate) fn for_saving(d: &Drawing, version: Version) -> Cow<'_, Drawing> {
                 return;
             }
             n += 1;
-            let Some(made) = st.get(h).and_then(|e| match &e.kind {
-                EntityKind::Solid3d(so) => as_3dsolid(e, so, version),
-                EntityKind::Region(r) => as_region(e, r, version),
-                _ => None,
+            let Some(made) = st.get(h).and_then(|e| {
+                read.acis.get(&h).and_then(|src| as_read(e, src, version)).or_else(|| match &e.kind {
+                    EntityKind::Solid3d(so) => as_3dsolid(e, so, version),
+                    EntityKind::Region(r) => as_region(e, r, version),
+                    _ => None,
+                })
             }) else {
                 continue;
             };
-            let (u, sab) = made;
-            let _ = st.modify(h, |e| e.kind = EntityKind::Unknown(u));
+            let (mut u, sab) = made;
+            // The entity's properties (colour, linetype, lineweight…) as every entity's: the
+            // writer takes an AutoCAD entity's from its groups.
+            let _ = st.modify(h, |e| {
+                u.tags.splice(0..0, crate::dxf_write::property_groups(&e.common));
+                e.kind = EntityKind::Unknown(u);
+            });
             if let Some(sab) = sab {
                 sabs.push((h, sab));
             }
