@@ -55,6 +55,7 @@ struct W {
 /// linetype, colour, lineweight, linetype scale, visibility, transparency), for an entity saved as
 /// groups of its own: a 3D solid or region saved as AutoCAD's 3DSOLID or REGION (`solid_acis`).
 /// A named plot style is left out (its placeholder's handle is the writer's).
+#[cfg(feature = "solids")]
 pub(crate) fn property_groups(c: &Common) -> Vec<draftcraft_doc::RawTag> {
     let mut w = W {
         t: vec![Tag::s(100, "AcDbEntity")],
