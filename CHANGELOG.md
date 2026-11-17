@@ -11,6 +11,10 @@ How to write it (see AGENTS.md):
 
 ## Unreleased
 
+### New
+- 3DMOVE, 3DROTATE, ROTATE3D, 3DSCALE, MIRROR3D, 3DALIGN and 3DARRAY move, turn, scale, mirror, align and array objects in space, under Modify ▸ 3D Operations, with AutoCAD's prompts and aliases (3M, 3R, 3AL, 3A).
+- LINE takes points in space: type x,y,z or @dx,dy,dz and the line keeps its height.
+
 ### Improved
 - The Workspace button on the status bar opens a menu of the workspaces, as on Windows, with the current one checked.
 - The workspace menus show 3D Modeling greyed out, with a note that 3D solids are not available in this build yet.
