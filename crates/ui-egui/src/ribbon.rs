@@ -766,6 +766,7 @@ const TABS: &[RibbonTab] = &[
                         b(Icon::Menu, "ui.dialog.commands", "Commands"),
                         b(Icon::Workspace, "workspace", "Workspaces"),
                     ]),
+                    Small(&[b(Icon::SettingsImport, "configimport", "Import Settings"), b(Icon::SettingsExport, "configexport", "Export Settings")]),
                 ],
             },
             RibbonPanel { title: "Applications", cols: &[Large(b(Icon::Open, "appload", "Load Application"))] },

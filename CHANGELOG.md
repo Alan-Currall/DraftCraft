@@ -11,6 +11,9 @@ How to write it (see AGENTS.md):
 
 ## Unreleased
 
+### New
+- Your settings in one file: Export Settings and Import Settings (Manage › Customization, or CONFIGEXPORT and CONFIGIMPORT) save the theme, Options, units, grid and snap, lineweights, plot style and command aliases to a TOML file and read it back on any computer.
+
 ### Improved
 - The Workspace button on the status bar opens a menu of the workspaces, as on Windows, with the current one checked.
 - The workspace menus show 3D Modeling greyed out, with a note that 3D solids are not available in this build yet.

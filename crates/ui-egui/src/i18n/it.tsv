@@ -1706,3 +1706,9 @@ menu	Workspaces	Aree di lavoro
 	Visualize	Visualizza
 	Primitive	Primitive
 	Views	Viste
+# Portable settings file (CONFIGIMPORT, CONFIGEXPORT).
+	Import Settings	Importa impostazioni
+	Export Settings	Esporta impostazioni
+	Import Settings...	Importa impostazioni...
+	Export Settings...	Esporta impostazioni...
+	DraftCraft settings (TOML)	Impostazioni DraftCraft (TOML)

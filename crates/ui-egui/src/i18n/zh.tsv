@@ -1679,3 +1679,9 @@ menu	CAD Standards	CAD 标准
 	Visualize	可视化
 	Primitive	图元
 	Views	视图
+# Portable settings file (CONFIGIMPORT, CONFIGEXPORT).
+	Import Settings	导入设置
+	Export Settings	导出设置
+	Import Settings...	导入设置...
+	Export Settings...	导出设置...
+	DraftCraft settings (TOML)	DraftCraft 设置 (TOML)
