@@ -13,6 +13,7 @@ How to write it (see AGENTS.md):
 
 ### New
 - Your settings in one file: Export Settings and Import Settings (Manage › Customization, or CONFIGEXPORT and CONFIGIMPORT) save the theme, Options, units, grid and snap, lineweights, plot style and command aliases to a TOML file and read it back on any computer.
+- The command line's AutoComplete learns which commands you use: the ones you run most, and most recently, move up the list, so typing LI soon offers LINE first if you draw lines more than you list. The arrow keys move through the suggestions, and Reset Suggestion Order in the command line's right-click menu forgets what was learned.
 
 ### Improved
 - The Workspace button on the status bar opens a menu of the workspaces, as on Windows, with the current one checked.
