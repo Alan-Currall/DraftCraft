@@ -30,7 +30,6 @@ mod merge;
 mod mleader_content;
 mod mleader_edit;
 mod modify;
-mod modify3d;
 mod pointcloud;
 pub mod underlay;
 pub(crate) use modify::Erased;
@@ -201,7 +200,6 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(overkill::specs());
         v.extend(blocks::specs());
         v.extend(modify::specs());
-        v.extend(modify3d::specs());
         v.extend(draworder::specs());
         v.extend(array::specs());
         v.extend(modify2::specs());
