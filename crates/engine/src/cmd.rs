@@ -22,7 +22,7 @@ pub(crate) mod groups;
 pub(crate) mod hatch;
 mod image;
 mod imageops;
-pub(crate) mod inquiry;
+mod inquiry;
 mod layer;
 mod layout;
 mod lisp;
@@ -47,8 +47,6 @@ mod qselect;
 mod selecttools;
 mod settings;
 pub mod sheetset;
-#[cfg(feature = "solids")]
-pub(crate) mod solids;
 mod spline_opts;
 mod table;
 mod tolerance;
@@ -227,8 +225,6 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(txt2mtxt::specs());
         v.extend(constraints::specs());
         v.extend(lisp::specs());
-        #[cfg(feature = "solids")]
-        v.extend(solids::specs());
         v
     })
 }
