@@ -13,6 +13,9 @@ How to write it (see AGENTS.md):
 
 ## 2.2.2
 
+### New
+- Linux packages for Fedora, openSUSE and RHEL (.rpm) and for Arch Linux, Manjaro and EndeavourOS (a pacman package), for x86_64 and ARM64: DraftCraft appears in the applications menu and opens .dxf and .dwg files.
+
 ### Improved
 - The DraftCraft logo with its name no longer sits beside the menu bar: the application button already is the logo, so the menus (File, Edit …) start at the left edge.
 
