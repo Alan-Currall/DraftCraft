@@ -374,6 +374,17 @@ pub fn status_bar(app: &mut CadApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The window's title, as AutoCAD's names its version and the drawing: "DraftCraft 2.2.0   Start"
+/// on the Start page, "DraftCraft 2.2.0   Plan.dwg" with a drawing open (".dwg" added to an
+/// unsaved drawing's name). The ribbon's title row and the desktop's title bar both show it.
+pub fn window_title(app: &CadApp) -> String {
+    let product = format!("DraftCraft {}", env!("CARGO_PKG_VERSION"));
+    match app.session.state() {
+        Ok(st) if !app.ui.start_tab => format!("{product}   {}{}", st.title, if st.title.contains('.') { "" } else { ".dwg" }),
+        _ => format!("{product}   {}", crate::tl!("Start")),
+    }
+}
+
 /// The Start page (no drawing open, or the Start tab).
 pub fn start_page(app: &mut CadApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
@@ -536,6 +547,18 @@ pub(crate) fn start_new(app: &mut CadApp, metric: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_title_names_the_version_and_the_drawing() {
+        let v = env!("CARGO_PKG_VERSION");
+        let mut app = CadApp::new(draftcraft_engine::Session::new(), crate::Services::default());
+        app.ui.start_tab = true;
+        assert_eq!(window_title(&app), format!("DraftCraft {v}   Start"));
+        app.ui.start_tab = false;
+        let name = app.session.state().map(|s| s.title.clone()).unwrap_or_default();
+        assert!(!name.is_empty());
+        assert_eq!(window_title(&app), format!("DraftCraft {v}   {name}.dwg"));
+    }
 
     #[test]
     fn the_start_page_new_drawing_is_in_the_chosen_units_and_remembers_them() {
