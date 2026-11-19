@@ -40,6 +40,28 @@ pub fn draws_own_frame_here() -> bool {
     draws_own_frame(std::env::var("DRAFTCRAFT_TITLEBAR").ok().as_deref())
 }
 
+/// The window's title, as AutoCAD's names its version and the drawing: "DraftCraft 2.2.0   Start"
+/// on the Start page, "DraftCraft 2.2.0   Plan.dwg" with a drawing open (".dwg" added to an
+/// unsaved drawing's name). The ribbon's title row and the desktop's title bar both show it.
+pub fn window_title(app: &CadApp) -> String {
+    let product = format!("DraftCraft {}", env!("CARGO_PKG_VERSION"));
+    match app.session.state() {
+        Ok(st) if !app.ui.start_tab => format!("{product}   {}{}", st.title, if st.title.contains('.') { "" } else { ".dwg" }),
+        _ => format!("{product}   {}", crate::tl!("Start")),
+    }
+}
+
+/// Keep the desktop's window title (macOS, Linux, a system frame) the same as [`window_title`].
+/// Sent only when it changes.
+pub fn sync_os_title(app: &CadApp, ctx: &egui::Context) {
+    let title = window_title(app);
+    let id = egui::Id::unique("draftcraft_os_window_title");
+    if ctx.data(|d| d.get_temp::<String>(id)).as_deref() != Some(title.as_str()) {
+        ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
+        ctx.data_mut(|d| d.insert_temp(id, title));
+    }
+}
+
 /// The window buttons, left to right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Caption {
@@ -57,7 +79,8 @@ pub fn title_bar(app: &mut CadApp, ui: &mut egui::Ui) {
         let buttons = Rect::from_min_max(pos2(r.right() - BUTTON_W * 3.0, r.top()), r.max);
         let free = Rect::from_min_max(r.min, pos2(buttons.left(), r.bottom()));
         // First, so the controls drawn over it keep their own clicks.
-        craft_window::title_bar::empty_area(ui, free).on_hover_text("DraftCraft");
+        let title = window_title(app);
+        craft_window::title_bar::empty_area(ui, free).on_hover_text(title.clone());
         let p = ui.painter().clone();
         let logo_left = r.left() + 8.0;
         let logo_w = crate::brand::paint_full(&p, logo_left, r.center().y, LOGO_H, t.chrome_dark);
@@ -200,6 +223,18 @@ pub fn edges(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_title_names_the_version_and_the_drawing() {
+        let v = env!("CARGO_PKG_VERSION");
+        let mut app = CadApp::new(draftcraft_engine::Session::new(), crate::Services::default());
+        app.ui.start_tab = true;
+        assert_eq!(window_title(&app), format!("DraftCraft {v}   Start"));
+        app.ui.start_tab = false;
+        let name = app.session.state().map(|s| s.title.clone()).unwrap_or_default();
+        assert!(!name.is_empty());
+        assert_eq!(window_title(&app), format!("DraftCraft {v}   {name}.dwg"));
+    }
 
     #[test]
     fn the_frame_is_drawn_on_windows_unless_asked_otherwise() {
