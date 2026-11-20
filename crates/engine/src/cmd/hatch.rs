@@ -207,17 +207,52 @@ pub(crate) fn island_style(t: &str) -> Option<u8> {
     }
 }
 
+/// The boundary around `p` found by looking near the point first and widening only when needed.
+/// Returns the region boundary and the owners vector from `outlines` that maps polyline indices
+/// back to drawing handles.
+fn boundary_near(d: &Drawing, space: &Space, p: Vec2, tol: f64) -> Option<(draftcraft_geom::region::Boundary, Vec<Handle>)> {
+    let ext = d.extents(space);
+    let size = (ext.width() + ext.height()).max(1e-6);
+    let gap = gap_tolerance(d);
+    // Try progressively larger windows centered at the pick point. This limits input segments
+    // for region tracing on large drawings, avoiding the global segment cap.
+    let search = |polys: Vec<Vec<Vec2>>| {
+        // A line that ends on a flattened curve (an ellipse) can stop short of its chords.
+        let snapped = draftcraft_geom::region::snap_ends(&polys, outline_tol(ext), tol);
+        draftcraft_geom::region::boundary_at_gap(&snapped, p, tol, gap)
+    };
+    let mut r = size / 1024.0;
+    for _ in 0..8 {
+        let win = Bounds2 { min: p - Vec2::new(r, r), max: p + Vec2::new(r, r) };
+        let (polys, owners) = outlines(d, space, Some(win));
+        let all = win.contains_box(&ext);
+        if let Some(found) = search(polys) {
+            // Only accept a boundary that clearly lies inside the window (avoids cutting off).
+            let fb = Bounds2::from_points(found.outer.iter().copied());
+            let pad = r * 1e-3;
+            let inner = Bounds2 { min: win.min + Vec2::new(pad, pad), max: win.max - Vec2::new(pad, pad) };
+            if all || inner.contains_box(&fb) {
+                return Some((found, owners));
+            }
+        }
+        if all {
+            // Searched the whole space and still found nothing usable.
+            return None;
+        }
+        r *= 4.0;
+    }
+    // Last resort: try the whole space.
+    let (polys, owners) = outlines(d, space, None);
+    search(polys).map(|f| (f, owners))
+}
+
 /// Boundary loops (outer + islands) around an internal point.
 pub(crate) fn loops_at(s: &Session, p: Vec2) -> Result<Vec<HatchLoop>> {
     let d = s.doc()?;
     let space = s.space();
     let ext = d.extents(&space);
     let tol = ((ext.width() + ext.height()) * 1e-9).max(1e-9);
-    let (polys, owners) = outlines(d, &space, None);
-    // A line that ends on a flattened curve (an ellipse) can stop short of its chords.
-    let polys = draftcraft_geom::region::snap_ends(&polys, outline_tol(ext), tol);
-    let found = draftcraft_geom::region::boundary_at_gap(&polys, p, tol, gap_tolerance(d))
-        .ok_or_else(|| EngineError::Other("Valid hatch boundary not found.".into()))?;
+    let (found, owners) = boundary_near(d, &space, p, tol).ok_or_else(|| EngineError::Other("Valid hatch boundary not found.".into()))?;
     let outer = found.outer;
     let ob = Bounds2::from_points(outer.iter().copied());
     let sources = handles_of(&owners, &found.outer_sources);
