@@ -80,6 +80,11 @@ impl Session {
                 if nested {
                     self.suspended = self.running.take();
                 }
+                // With PICKFIRST off, clear any pre-selection when an interactive command starts
+                // so the command prompts without an implied selection, matching AutoCAD LT.
+                if !nested && !self.settings.pickfirst {
+                    self.set_selection(Vec::new());
+                }
                 self.running = Some(Running { id: spec.id.to_string(), machine, before, selection_before });
                 self.pending_window = None;
                 // Some commands complete immediately (e.g. ERASE with a pickfirst selection).

@@ -785,6 +785,7 @@ fn collect_prompt_clicks(app: &mut CadApp, ui: &egui::Ui, context: PromptClickCo
     let point_prompt = app.session.current_prompt().is_some_and(|p| draftcraft_engine::pointmod::accepts(&p))
         && app.session.pending_window.is_none()
         && !app.session.realtime_zoom_active();
+    let selecting = app.session.current_prompt().is_some_and(|p| p.picks_objects());
     let pressed_primary = context.primary_clicked || (point_prompt && context.response.drag_stopped_by(egui::PointerButton::Primary));
     if point_prompt && context.inside && pressed_primary && !context.middle_down && app.cmd.options.is_none() && app.cmd.buffer.is_empty() {
         let releases: Vec<egui::Pos2> = ui.input(|i| {
@@ -799,10 +800,16 @@ fn collect_prompt_clicks(app: &mut CadApp, ui: &egui::Ui, context: PromptClickCo
         // The last one is placed below, at the cursor, like any click.
         if let Some((_, earlier)) = releases.split_last() {
             for pos in earlier.iter().filter(|p| context.rect.contains(**p)) {
-                let w = effective_point(app, context.xf.to_world(*pos), &context.xf, ui.ctx());
-                let result = match app.canvas.snap {
-                    Some(hit) => app.session.input_snapped(hit),
-                    None => app.session.input(Input::Point(w)),
+                // Selection prompts must ignore snaps/ortho/polar: use the raw world point.
+                let raw_w = context.xf.to_world(*pos);
+                let w = if selecting { raw_w } else { effective_point(app, raw_w, &context.xf, ui.ctx()) };
+                let result = if selecting {
+                    app.session.input(Input::Point(w))
+                } else {
+                    match app.canvas.snap {
+                        Some(hit) => app.session.input_snapped(hit),
+                        None => app.session.input(Input::Point(w)),
+                    }
                 };
                 if let Err(e) = result {
                     app.session.echo(e.to_string());
@@ -937,6 +944,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         && let Some(p) = app.canvas.cursor
     {
         if app.session.prompting() {
+            // Selection prompts: ignore snaps/ortho/polar and use the raw cursor.
+            let selecting = app.session.current_prompt().is_some_and(|pr| pr.picks_objects());
             // Ctrl held while picking the point of a grip edit makes copies (the Copy option).
             if mods.ctrl && app.session.running.as_ref().is_some_and(|r| r.id == "grip") {
                 let _ = app.session.input(Input::Keyword("Copy".into()));
@@ -948,9 +957,15 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
                 app.cmd.buffer.clear();
             }
             // Preserve a snap's viewport origin for DIST, and its deferred curve where needed.
-            let result = match app.canvas.snap {
-                Some(hit) => app.session.input_snapped(hit),
-                None => app.session.input(Input::Point(p)),
+            let result = if selecting {
+                // raw_world is computed above by update_canvas_cursor
+                let world = raw_world.unwrap_or(p);
+                app.session.input(Input::Point(world))
+            } else {
+                match app.canvas.snap {
+                    Some(hit) => app.session.input_snapped(hit),
+                    None => app.session.input(Input::Point(p)),
+                }
             };
             if let Err(e) = result {
                 app.session.echo(e.to_string());
