@@ -8,38 +8,91 @@ use craft_ui::docking::{
 use craft_ui::layout::{SplitAxis, SplitSize};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Panel {
     Canvas,
     ToolSets,
     QuickCalc,
     Layers,
     Properties,
-    #[serde(rename = "externalReferences")]
     ExternalRefs,
     DesignCenter,
     ToolPalettes,
     SheetSet,
+    /// A tear-off ribbon panel identified by its ribbon tab and panel title.
+    Ribbon { tab: &'static str, panel: &'static str },
+}
+
+impl Serialize for Panel {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s: Cow<'_, str> = match self {
+            Panel::Canvas => Cow::Borrowed("canvas"),
+            Panel::ToolSets => Cow::Borrowed("toolSets"),
+            Panel::QuickCalc => Cow::Borrowed("quickCalc"),
+            Panel::Layers => Cow::Borrowed("layers"),
+            Panel::Properties => Cow::Borrowed("properties"),
+            Panel::ExternalRefs => Cow::Borrowed("externalReferences"),
+            Panel::DesignCenter => Cow::Borrowed("designCenter"),
+            Panel::ToolPalettes => Cow::Borrowed("toolPalettes"),
+            Panel::SheetSet => Cow::Borrowed("sheetSet"),
+            Panel::Ribbon { tab, panel } => Cow::Owned(format!("ribbon:{tab}:{panel}")),
+        };
+        serializer.serialize_str(&s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Panel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "canvas" => Panel::Canvas,
+            "toolSets" => Panel::ToolSets,
+            "quickCalc" => Panel::QuickCalc,
+            "layers" => Panel::Layers,
+            "properties" => Panel::Properties,
+            "externalReferences" => Panel::ExternalRefs,
+            "designCenter" => Panel::DesignCenter,
+            "toolPalettes" => Panel::ToolPalettes,
+            "sheetSet" => Panel::SheetSet,
+            _ => {
+                if let Some(rest) = s.strip_prefix("ribbon:") {
+                    let mut parts = rest.splitn(2, ':');
+                    let tab = Box::leak(parts.next().unwrap_or_default().to_string().into_boxed_str());
+                    let panel = Box::leak(parts.next().unwrap_or_default().to_string().into_boxed_str());
+                    Panel::Ribbon { tab, panel }
+                } else {
+                    // Unknown: degrade gracefully to a harmless panel instead of erroring.
+                    Panel::Properties
+                }
+            }
+        })
+    }
 }
 
 impl Panel {
-    pub const ALL: &[Self] = &[Self::Canvas, Self::ToolSets, Self::Layers, Self::Properties, Self::ExternalRefs];
-    pub fn id(self) -> &'static str {
+    pub fn id(&self) -> String {
         match self {
-            Self::Canvas => "canvas",
-            Self::ToolSets => "toolSets",
-            Self::QuickCalc => "quickCalc",
-            Self::Layers => "layers",
-            Self::Properties => "properties",
-            Self::ExternalRefs => "externalReferences",
-            Self::DesignCenter => "designCenter",
-            Self::ToolPalettes => "toolPalettes",
-            Self::SheetSet => "sheetSet",
+            Self::Canvas => "canvas".into(),
+            Self::ToolSets => "toolSets".into(),
+            Self::QuickCalc => "quickCalc".into(),
+            Self::Layers => "layers".into(),
+            Self::Properties => "properties".into(),
+            Self::ExternalRefs => "externalReferences".into(),
+            Self::DesignCenter => "designCenter".into(),
+            Self::ToolPalettes => "toolPalettes".into(),
+            Self::SheetSet => "sheetSet".into(),
+            Self::Ribbon { tab, panel } => format!("ribbon:{tab}:{panel}"),
         }
     }
-    fn label(self) -> &'static str {
+    fn label(&self) -> &'static str {
         match self {
             Self::Canvas => "Drawing",
             Self::ToolSets => "Tool Sets",
@@ -50,10 +103,11 @@ impl Panel {
             Self::DesignCenter => "DesignCenter",
             Self::ToolPalettes => "Tool Palettes",
             Self::SheetSet => "Sheet Set Manager",
+            Self::Ribbon { .. } => "Ribbon Panel",
         }
     }
     /// The icon a palette shows in a column collapsed to icons.
-    pub fn icon(self) -> Option<crate::icons::Icon> {
+    pub fn icon(&self) -> Option<crate::icons::Icon> {
         use crate::icons::Icon;
         match self {
             Self::Canvas => None,
@@ -65,6 +119,7 @@ impl Panel {
             Self::DesignCenter => Some(Icon::DesignCenter),
             Self::ToolPalettes => Some(Icon::ToolPalette),
             Self::SheetSet => Some(Icon::SheetSet),
+            Self::Ribbon { tab, panel } => crate::ribbon::panel_icon(tab, panel),
         }
     }
     /// Palettes outside the default arrangement, opened on request (QUICKCALC).
@@ -99,7 +154,7 @@ pub const PALETTES_WIDTH: f32 = 300.0;
 const LAYERS_HEIGHT: f32 = 280.0;
 
 fn dock(side: Side, width: f32, groups: &[Panel]) -> Node<Panel> {
-    let groups = groups.iter().map(|panel| Group::new(vec![*panel], 0)).collect();
+    let groups = groups.iter().cloned().map(|panel| Group::new(vec![panel], 0)).collect();
     Node::Dock { side, columns: vec![Column::new(groups, width)] }
 }
 
@@ -122,8 +177,8 @@ pub fn default_workspace() -> Workspace {
 }
 
 /// The dock a panel belongs in: Tool Sets on the left, the palettes on the right.
-fn home_side(panel: Panel) -> (Side, f32) {
-    if panel == Panel::ToolSets { (Side::Start, TOOL_SETS_WIDTH) } else { (Side::End, PALETTES_WIDTH) }
+fn home_side(panel: &Panel) -> (Side, f32) {
+    if matches!(panel, Panel::ToolSets) { (Side::Start, TOOL_SETS_WIDTH) } else { (Side::End, PALETTES_WIDTH) }
 }
 
 /// The panels of every dock group on `side`: columns from the window edge inwards, groups from
@@ -154,37 +209,41 @@ fn docked(layout: &Layout<Panel>, panel: Panel) -> bool {
 /// The docked neighbour a panel with no recorded place opens beside, as a new group above
 /// (`false`) or below (`true`) it: Layers above Properties, External References and QuickCalc
 /// below them, Tool Sets at the top of the left dock.
-fn home_anchor(layout: &Layout<Panel>, panel: Panel) -> Option<(Panel, bool)> {
-    let neighbours: &[(Panel, bool)] = match panel {
-        Panel::Canvas | Panel::ToolSets => &[],
-        Panel::Layers => &[(Panel::Properties, false), (Panel::ExternalRefs, false)],
-        Panel::Properties => &[(Panel::Layers, true), (Panel::ExternalRefs, false)],
-        Panel::ExternalRefs => &[(Panel::Properties, true), (Panel::Layers, true)],
-        Panel::QuickCalc | Panel::DesignCenter | Panel::ToolPalettes | Panel::SheetSet => {
-            &[(Panel::ExternalRefs, true), (Panel::Properties, true), (Panel::Layers, true)]
+fn home_anchor(layout: &Layout<Panel>, panel: &Panel) -> Option<(Panel, bool)> {
+    let neighbours: Vec<(Panel, bool)> = match panel {
+        Panel::Canvas | Panel::ToolSets => Vec::new(),
+        Panel::Layers => vec![(Panel::Properties, false), (Panel::ExternalRefs, false)],
+        Panel::Properties => vec![(Panel::Layers, true), (Panel::ExternalRefs, false)],
+        Panel::ExternalRefs => vec![(Panel::Properties, true), (Panel::Layers, true)],
+        Panel::QuickCalc | Panel::DesignCenter | Panel::ToolPalettes | Panel::SheetSet | Panel::Ribbon { .. } => {
+            vec![(Panel::ExternalRefs, true), (Panel::Properties, true), (Panel::Layers, true)]
         }
     };
-    if let Some(found) = neighbours.iter().copied().find(|(neighbour, _)| docked(layout, *neighbour)) {
+    if let Some(found) = neighbours.into_iter().find(|(neighbour, _)| docked(layout, neighbour.clone())) {
         return Some(found);
     }
     let (side, _) = home_side(panel);
     let columns = dock_groups(layout, side);
     let column = columns.first()?;
-    if panel == Panel::ToolSets {
-        column.first().and_then(|group| group.first()).map(|anchor| (*anchor, false))
+    if matches!(panel, Panel::ToolSets) {
+        column.first().and_then(|group| group.first()).map(|anchor| (anchor.clone(), false))
     } else {
-        column.last().and_then(|group| group.first()).map(|anchor| (*anchor, true))
+        column.last().and_then(|group| group.first()).map(|anchor| (anchor.clone(), true))
     }
 }
 
 /// The actions that open a panel with no recorded place in its dock: a new group beside its
 /// docked neighbour, else a new dock on its side at its default width.
 fn home(layout: &Layout<Panel>, panel: Panel) -> Vec<Action<Panel>> {
-    if let Some((anchor, below)) = home_anchor(layout, panel) {
+    if let Some((anchor, below)) = home_anchor(layout, &panel) {
         return vec![Action::OpenAt { panel, anchor, placement: Placement::Group { below, height: None } }];
     }
-    let (side, width) = home_side(panel);
-    vec![Action::Open { panel, anchor: None }, Action::MovePanel { panel, to: Target::NewDock { side } }, Action::ResizeColumn { panel, width }]
+    let (side, width) = home_side(&panel);
+    vec![
+        Action::Open { panel: panel.clone(), anchor: None },
+        Action::MovePanel { panel: panel.clone(), to: Target::NewDock { side } },
+        Action::ResizeColumn { panel, width },
+    ]
 }
 
 /// craft-ui's checks plus the drawing view's: a saved or hand-edited file cannot hide, float,
@@ -231,10 +290,10 @@ pub fn validate(workspace: &Workspace) -> Result<(), String> {
 pub fn reveal_panel(workspace: &mut Workspace, panel: Panel) -> Result<(), String> {
     let mut next = workspace.clone();
     if next.layout.contains(&panel) || next.hidden.iter().any(|(id, _)| *id == panel) {
-        let fallback = home_anchor(&next.layout, panel).map(|(anchor, _)| anchor);
+        let fallback = home_anchor(&next.layout, &panel).map(|(anchor, _)| anchor);
         next.set_visible(panel, true, fallback, permissions).map_err(|error| error.to_string())?;
     } else {
-        next.apply_all(home(&next.layout, panel).into_iter().chain([Action::Activate { panel }]), permissions).map_err(|error| error.to_string())?;
+        next.apply_all(home(&next.layout, panel.clone()).into_iter().chain([Action::Activate { panel }]), permissions).map_err(|error| error.to_string())?;
     }
     validate(&next)?;
     *workspace = next;
@@ -255,8 +314,8 @@ fn set_visible(workspace: &mut Workspace, panel: Panel, visible: bool) -> Result
     let mut next = workspace.clone();
     let location = next.hidden.iter().find(|(id, _)| *id == panel).map(|(_, location)| location.clone());
     // A direct restore against a hidden anchor would open a window of its own.
-    let direct = location.filter(|location| location.anchor.is_none_or(|anchor| next.layout.contains(&anchor)));
-    if direct.is_some_and(|location| next.layout.restore(panel, &location).is_ok()) {
+    let direct = location.filter(|location| location.anchor.as_ref().is_none_or(|anchor| next.layout.contains(anchor)));
+    if direct.is_some_and(|location| next.layout.restore(panel.clone(), &location).is_ok()) {
         next.hidden.retain(|(id, _)| *id != panel);
         validate(&next)?;
         *workspace = next;
@@ -431,10 +490,16 @@ impl DockContent<Panel> for Panels<'_> {
             Panel::DesignCenter => crate::palettes::designcenter::show(app, ui),
             Panel::ToolPalettes => crate::palettes::toolpalettes::show(app, ui),
             Panel::SheetSet => crate::palettes::sheetset::show(app, ui),
+            Panel::Ribbon { tab, panel } => {
+                crate::ribbon::tearoff_panel_body(app, ui, tab, panel);
+            }
         }
     }
     fn logical_label(&self, panel: &Panel) -> String {
-        crate::i18n::t(panel.label()).into()
+        match panel {
+            Panel::Ribbon { tab, panel } => format!("{} — {}", crate::i18n::t(panel), crate::i18n::t(tab)),
+            _ => crate::i18n::t(panel.label()).into(),
+        }
     }
     fn permissions(&self, panel: &Panel) -> Permissions {
         permissions(panel)
@@ -460,6 +525,7 @@ fn panel_limits(panel: &Panel) -> PanelLimits {
         Panel::ToolSets => (egui::vec2(220.0, 150.0), 480.0),
         Panel::Layers | Panel::Properties | Panel::ExternalRefs => (egui::vec2(220.0, 100.0), 720.0),
         Panel::DesignCenter | Panel::ToolPalettes | Panel::SheetSet => (egui::vec2(220.0, 160.0), 900.0),
+        Panel::Ribbon { .. } => (egui::vec2(220.0, 120.0), 1_000.0),
     };
     PanelLimits { min, max: egui::vec2(max_width, 1_000_000.0) }
 }
@@ -485,5 +551,30 @@ pub(crate) fn toggle_on_demand(app: &mut crate::CadApp, panel: Panel, width: f32
         command(app, false, &json!({ "operation": "close", "panel": panel.id() }))
     } else {
         open_on_demand(app, panel, width)
+    }
+}
+
+/// Close every torn-off ribbon panel (return them to the ribbon).
+pub fn close_ribbon_panels(app: &mut crate::CadApp) {
+    let panels: Vec<Panel> = app
+        .ui
+        .docking
+        .layout
+        .panels()
+        .into_iter()
+        .filter(|p| matches!(p, Panel::Ribbon { .. }))
+        .cloned()
+        .collect();
+    if panels.is_empty() {
+        return;
+    }
+    let mut ws = app.ui.docking.clone();
+    for p in panels {
+        let _ = ws.set_visible(p, false, None, permissions);
+    }
+    // Also drop any hidden Ribbon panels.
+    ws.hidden.retain(|(p, _)| !matches!(p, Panel::Ribbon { .. }));
+    if validate(&ws).is_ok() {
+        app.ui.docking = ws;
     }
 }

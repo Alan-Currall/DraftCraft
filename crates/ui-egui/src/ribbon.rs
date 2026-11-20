@@ -830,6 +830,12 @@ pub(crate) fn icon_for(cmd: &str) -> Option<Icon> {
     TABS.iter().flat_map(|t| t.panels.iter()).flat_map(all_tools).find(|(_, c, _)| c.eq_ignore_ascii_case(cmd)).map(|(icon, _, _)| icon)
 }
 
+/// The icon to show for a tear-off ribbon panel, by tab and panel title.
+pub(crate) fn panel_icon(tab: &str, title: &str) -> Option<Icon> {
+    let tab = TABS.iter().find(|t| t.name.eq_ignore_ascii_case(tab))?;
+    let panel = tab.panels.iter().find(|p| p.title.eq_ignore_ascii_case(title))?;
+    Some(first_icon(panel))
+}
 fn all_tools(panel: &RibbonPanel) -> Vec<Tool> {
     let mut out: Vec<Tool> = Vec::new();
     let mut push = |b: &Btn| {
@@ -1878,6 +1884,78 @@ fn layer_list(app: &CadApp, ui: &mut egui::Ui, rect: Rect, id: egui::Id) -> Opti
         });
     });
     picked
+}
+
+/// Draw the body of one ribbon panel as a tear-off floating panel (inside a docking window).
+pub(crate) fn tearoff_panel_body(app: &mut CadApp, ui: &mut egui::Ui, tab: &str, title: &str) {
+    let Some(tab) = TABS.iter().find(|t0| t0.name.eq_ignore_ascii_case(tab)) else { return };
+    let Some(panel) = tab.panels.iter().find(|p| p.title.eq_ignore_ascii_case(title)) else { return };
+    // No compaction in a tear-off: always show full labels.
+    let p = ui.painter().clone();
+    let mut out = Out::default();
+    let prect = ui.max_rect();
+    let top = prect.top() + 3.0;
+    let body_h = (prect.height() - PANEL_TITLE).max(ROW * 3.0);
+    let mut cx = prect.left() + 5.0;
+    for (ci, col) in panel.cols.iter().enumerate() {
+        let cw = col_width(&p, col, false);
+        let id = ui.scope_id().with(("ribbon-tearoff", tab.name, panel.title, ci));
+        match col {
+            Large(btn) => large_button(app, ui, &p, Rect::from_min_size(pos2(cx, top), vec2(cw - 3.0, body_h)), btn, id, &mut out),
+            Small(btns) => {
+                for (ri, btn) in btns.iter().enumerate().take(3) {
+                    let r = Rect::from_min_size(pos2(cx, top + ri as f32 * (ROW + 1.0)), vec2(cw - 3.0, ROW));
+                    small_button(ui, &p, r, btn, true, id.with(ri), &mut out);
+                }
+            }
+            Icons(btns) => {
+                for (ri, btn) in btns.iter().enumerate().take(3) {
+                    let w = MINI + if btn.more.is_empty() { 0.0 } else { ARROW };
+                    let r = Rect::from_min_size(pos2(cx, top + ri as f32 * (ROW + 1.0)), vec2(w, ROW));
+                    small_button(ui, &p, r, btn, false, id.with(ri), &mut out);
+                }
+            }
+            Layers(rows, labelled) => {
+                let lr = Rect::from_min_size(pos2(cx, top + 1.0), vec2(cw - 8.0, ROW - 1.0));
+                match layer_list(app, ui, lr, id.with("list")) {
+                    Some(LayerPick::Layer(name)) => {
+                        out.prop = Some(Prop { key: "layer", value: json!(name), current: ("layer.current", json!({ "name": name })) });
+                    }
+                    Some(LayerPick::Toggle(params)) => out.run = Some(("layer.set", params)),
+                    None => {}
+                }
+                for (ri, (row, last)) in rows.iter().zip(labelled.iter()).enumerate() {
+                    let y = top + (ri as f32 + 1.0) * (ROW + 1.0);
+                    let mut bx = cx;
+                    for (k, btn) in row.iter().enumerate() {
+                        let r = Rect::from_min_size(pos2(bx, y), vec2(MINI, ROW));
+                        small_button(ui, &p, r, btn, false, id.with((ri, k)), &mut out);
+                        bx += MINI;
+                    }
+                    let r = Rect::from_min_max(pos2(bx + 2.0, y), pos2(cx + cw - 8.0, y + ROW));
+                    small_button(ui, &p, r, last, true, id.with((ri, "last")), &mut out);
+                }
+            }
+            Props => {
+                props_lists(app, ui, Rect::from_min_size(pos2(cx, top), vec2(cw - 6.0, body_h)), id, &mut out);
+            }
+        }
+        cx += cw;
+    }
+    if let Some(prop) = out.prop {
+        set_property(app, prop);
+    }
+    if let Some((cmd, params)) = out.run
+        && let Err(e) = app.run(cmd, params)
+    {
+        app.set_status(e);
+    }
+    if let Some(text) = out.typed {
+        app.cmdline(&text);
+    }
+    if let Some(cmd) = out.command {
+        app.start(cmd);
+    }
 }
 
 #[cfg(test)]
