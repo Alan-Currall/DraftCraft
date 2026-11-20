@@ -65,6 +65,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.toggle.menubar", "In-window Menu Bar", &["Window", "In-window Menu Bar"], None),
     ("ui.hidepalettes", "Hide Palettes", &["Window", "Hide Palettes"], None),
     ("ui.resetpalettes", "Reset Palettes", &["Window", "Reset Palettes"], None),
+    ("ui.ribbon.returnpanels", "Return Ribbon Panels to Ribbon", &["Window", "Return Ribbon Panels to Ribbon"], None),
     ("ui.start", "Start", &["Window", "Start"], None),
     ("ui.dialog.layers", "Layer Properties Manager", &["Window", "Layers"], None),
     ("ui.dialog.blocks", "Blocks", &["Window", "Blocks"], None),
@@ -149,6 +150,10 @@ fn route_ui_subsystems(app: &mut CadApp, id: &str, params: &Value) -> Option<Res
     }
     if matches!(id, "ui.dock" | "ui.dock.reset") {
         return Some(crate::docking::command(app, id == "ui.dock.reset", params));
+    }
+    if id == "ui.ribbon.returnpanels" {
+        crate::docking::close_ribbon_panels(app);
+        return Some(Ok(Value::Null));
     }
     if matches!(id, "ui.panel.properties" | "ui.panel.layers") {
         let panel = if id == "ui.panel.properties" { "properties" } else { "layers" };
