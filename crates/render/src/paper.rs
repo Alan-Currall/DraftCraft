@@ -1,7 +1,9 @@
 //! Paper sizes and the layout sheet (paper rectangle, printable area) for paper space.
 //!
 //! Paper-space units are millimetres in metric drawings (`MEASUREMENT` = 1) and on layouts whose
-//! page setup is in millimetres, and inches otherwise. The sheet's lower-left corner is the paper-space origin.
+//! page setup is in millimetres, and inches otherwise. A layout read from a file may place the
+//! paper off the paper-space origin: its lower-left corner sits at the layout limits (or, when
+//! those do not match the paper, at the negative of the paper image origin less the margins).
 
 use draftcraft_doc::{Drawing, PageSetup};
 use draftcraft_geom::{Bounds2, Vec2};
@@ -97,17 +99,19 @@ pub fn unit_mm_of(d: &Drawing, h: draftcraft_doc::Handle) -> f64 {
 /// The paper sheet of a layout, in paper-space units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sheet {
-    /// Sheet size (already rotated for landscape). The sheet spans `(0,0)..size`.
+    /// Sheet size (already rotated for landscape). The sheet spans `origin..origin + size`.
     pub size: Vec2,
     /// Printable area (inside the margins).
     pub printable: Bounds2,
     /// Millimetres per paper-space unit.
     pub unit_mm: f64,
+    /// The paper's lower-left corner in paper space.
+    pub origin: Vec2,
 }
 
 impl Sheet {
     pub fn bounds(&self) -> Bounds2 {
-        Bounds2::new(Vec2::ZERO, self.size)
+        Bounds2::new(self.origin, self.origin + self.size)
     }
     /// The sheet for a page setup in a drawing whose paper units are `unit_mm` millimetres.
     pub fn from_page(page: &PageSetup, unit_mm: f64) -> Sheet {
@@ -117,22 +121,71 @@ impl Sheet {
         let (w, h) = if page.landscape { (w.max(h), w.min(h)) } else { (w.min(h), w.max(h)) };
         let u = if unit_mm.is_finite() && unit_mm > 0.0 { unit_mm } else { 1.0 };
         let size = Vec2::new(w / u, h / u);
-        let m = |i: usize| page.margins_mm.get(i).copied().filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(0.0) / u;
-        // Margins: left, bottom, right, top (DXF group codes 40..43).
-        let (l, b, r, t) = (m(0), m(1), m(2), m(3));
+        // Margins: left, bottom, right, top (DXF group codes 40..43). Rotate for landscape so
+        // they stay with the physical media after the width/height swap above.
+        let raw = page.margins_mm.map(|v| if v.is_finite() && v >= 0.0 { v } else { 0.0 });
+        let [ml, mb, mr, mt] = raw;
+        let (l_mm, b_mm, r_mm, t_mm) = if page.landscape { (mt, ml, mb, mr) } else { (ml, mb, mr, mt) };
+        let (l, b, r, t) = (l_mm / u, b_mm / u, r_mm / u, t_mm / u);
         let printable = if l + r < size.x && b + t < size.y {
             Bounds2::new(Vec2::new(l, b), Vec2::new(size.x - r, size.y - t))
         } else {
             Bounds2::new(Vec2::ZERO, size)
         };
-        Sheet { size, printable, unit_mm: u }
+        Sheet { size, printable, unit_mm: u, origin: Vec2::ZERO }
     }
 }
 
 /// The sheet of a named layout (`None` if there is no such layout).
 pub fn sheet(d: &Drawing, layout: &str) -> Option<Sheet> {
     let l = d.layouts.iter().find(|l| l.name == layout).or_else(|| d.layout(layout))?;
-    Some(Sheet::from_page(&l.page, page_unit_mm(d, &l.page)))
+    Some(sheet_for(d, &l.name, &l.page))
+}
+
+/// The sheet of `page` as placed by the layout `layout`: the paper's lower-left corner where the
+/// file placed it. A layout authored here (no image origin and no limits) stays at the origin.
+pub fn sheet_for(d: &Drawing, layout: &str, page: &PageSetup) -> Sheet {
+    let u = page_unit_mm(d, page);
+    let mut s = Sheet::from_page(page, u);
+    // Paper image origin, in page units; None means a page DraftCraft made (render at origin).
+    let image_origin = page.image_origin;
+    // Limits from the layout, if they look like the paper (within half a mm per side).
+    let limits_match_sheet = |lo: Vec2, hi: Vec2| {
+        let near = |a: f64, b: f64| (a - b).abs() <= 0.5 / u;
+        near(hi.x - lo.x, s.size.x) && near(hi.y - lo.y, s.size.y)
+    };
+    // Prefer layout limits when they match the paper size.
+    let origin_from_limits = d
+        .layouts
+        .iter()
+        .find(|l| l.name.eq_ignore_ascii_case(layout))
+        .and_then(|l| {
+            l.limits.and_then(|(lo, hi)| {
+                if limits_match_sheet(lo, hi) {
+                    Some(lo)
+                } else {
+                    None
+                }
+            })
+        });
+    let origin = if let Some(o) = origin_from_limits {
+        o
+    } else if let Some(io) = image_origin {
+        // Offset by the negative image origin less margins (left/bottom).
+            let [l, b, _, _] = page.margins_mm;
+            Vec2::ZERO - io / u - Vec2::new(l / u, b / u)
+    } else {
+        // A layout authored here: keep the paper at the origin.
+        Vec2::ZERO
+    };
+    // Guard against hostile values: keep the default-at-origin sheet if origin is not sane.
+    if !(origin.x.is_finite() && origin.y.is_finite()) || origin.x.abs() > 1.0e12 || origin.y.abs() > 1.0e12 {
+        return s;
+    }
+    s.origin = origin;
+    // Move the printable area by the same offset.
+    s.printable = Bounds2::new(s.printable.min + origin, s.printable.max + origin);
+    s
 }
 
 #[cfg(test)]
