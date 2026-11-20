@@ -1138,7 +1138,16 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                         set = Some(json!({ "handles": ids, "text": s }));
                     }
                 });
-                num(ui, "Height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                // LT-style paper/model height rows for annotative text.
+                if draftcraft_doc::is_annotative(&e) {
+                    let f = d.current_anno_scale().factor();
+                    num(ui, "Paper text height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                    prop_row(ui, "Model text height", |ui| {
+                        read_only(ui, &len(tx.height * f));
+                    });
+                } else {
+                    num(ui, "Height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                }
                 num(ui, "Rotation", "rotation", real(angles.shown(tx.rotation).to_degrees()), &mut set, &mut bad, &ids);
                 num(ui, "Width factor", "widthFactor", real(tx.width_factor), &mut set, &mut bad, &ids);
             }
@@ -1148,7 +1157,15 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                         set = Some(json!({ "handles": ids, "text": s }));
                     }
                 });
-                num(ui, "Text height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                if draftcraft_doc::is_annotative(&e) {
+                    let f = d.current_anno_scale().factor();
+                    num(ui, "Paper text height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                    prop_row(ui, "Model text height", |ui| {
+                        read_only(ui, &len(tx.height * f));
+                    });
+                } else {
+                    num(ui, "Text height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                }
                 num(ui, "Defined width", "width", len(tx.width), &mut set, &mut bad, &ids);
             }
             EntityKind::LwPolyline(pl) => {
@@ -1198,7 +1215,15 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                 // The style's values with this dimension's own overrides; editing one overrides
                 // it for the selected dimensions, as AutoCAD's Properties palette does.
                 let st = d.dim_style(&dm.style).cloned().unwrap_or_default().with_overrides(&dm.overrides);
-                num(ui, "Text height", "textHeight", len(st.text_height), &mut set, &mut bad, &ids);
+                if draftcraft_doc::is_annotative(&e) {
+                    let f = d.current_anno_scale().factor();
+                    num(ui, "Paper text height", "textHeight", len(st.text_height), &mut set, &mut bad, &ids);
+                    prop_row(ui, "Model text height", |ui| {
+                        read_only(ui, &len(st.text_height * f));
+                    });
+                } else {
+                    num(ui, "Text height", "textHeight", len(st.text_height), &mut set, &mut bad, &ids);
+                }
                 num(ui, "Arrow size", "arrowSize", len(st.arrow_size), &mut set, &mut bad, &ids);
                 num(ui, "Dim scale overall", "dimScale", real(st.scale), &mut set, &mut bad, &ids);
                 prop_row(ui, "Precision", |ui| {
@@ -1207,6 +1232,19 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                         set = Some(json!({ "handles": ids, "precision": n }));
                     }
                 });
+            }
+            EntityKind::MLeader(m) => {
+                if let Some(t) = &m.text {
+                    if draftcraft_doc::is_annotative(&e) {
+                        let f = d.current_anno_scale().factor();
+                        num(ui, "Paper text height", "height", len(t.height), &mut set, &mut bad, &ids);
+                        prop_row(ui, "Model text height", |ui| {
+                            read_only(ui, &len(t.height * f));
+                        });
+                    } else {
+                        num(ui, "Text height", "height", len(t.height), &mut set, &mut bad, &ids);
+                    }
+                }
             }
             EntityKind::Insert(i) => {
                 // A dynamic block reference shows its dynamic block's name, not its anonymous

@@ -373,6 +373,14 @@ fn apply_kind_properties(
         EntityKind::Insert(insert) => set_insert_properties(insert, params),
         EntityKind::Dimension(dimension) => set_dimension_properties(dimension, params, dim_style, dim_overrides),
         EntityKind::Hatch(hatch) => set_hatch_properties(hatch, params),
+        EntityKind::MLeader(m) => {
+            // Paper text height of a multileader's text content.
+            if let Some(x) = num("height").filter(|x| *x > 0.0) {
+                if let Some(t) = &mut m.text {
+                    t.height = x;
+                }
+            }
+        }
         _ => {}
     }
 }

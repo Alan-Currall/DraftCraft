@@ -1221,6 +1221,8 @@ menu	Modify	Edita
 	Current Scale Only	Solo scala corrente
 	All Scales	Tutte le scale
 	Annotative scale	Scala annotativa
+	Paper text height	Altezza testo su carta
+	Model text height	Altezza testo in modello
 	Add Scales to Object	Aggiungi scale all'oggetto
 	List all scales for selected objects	Elenca tutte le scale per gli oggetti selezionati
 	List scales common to all selected objects only	Elenca solo scale comuni a tutti gli oggetti selezionati
