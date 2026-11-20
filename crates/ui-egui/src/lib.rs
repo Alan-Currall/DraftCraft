@@ -38,6 +38,7 @@ pub mod fault;
 // The Find and Replace window behind the FIND command.
 pub mod finddlg;
 pub mod hatchdlg;
+pub mod help;
 mod mtext_editor;
 mod panel_state;
 pub mod spacemouse;
@@ -129,6 +130,9 @@ pub struct UiState {
     pub in_window_menu: bool,
     pub start_tab: bool,
     pub dialog: Option<String>,
+    /// The Help panel's question and topic (not saved).
+    #[serde(skip)]
+    pub help: help::State,
     pub history_lines: usize,
     /// Interface theme: "system" (follow the OS light/dark appearance), "light" or "dark".
     pub theme: theme::ThemePref,
@@ -227,6 +231,7 @@ impl Default for UiState {
             in_window_menu: !cfg!(target_os = "macos"),
             start_tab: false,
             dialog: None,
+            help: help::State::default(),
             history_lines: 3,
             theme: theme::ThemePref::default(),
             animations: animation::AnimationPref::default(),
@@ -496,6 +501,11 @@ impl CadApp {
     /// ran instead, `Ok(false)` when `text` ran, `Err` when it failed (the error is echoed).
     pub fn cmdline_or_ran(&mut self, text: &str, fallback: Option<&str>) -> Result<bool, String> {
         if !self.session.prompting() {
+            // A plain-English question opens Help instead of trying to run a command.
+            if help::is_question(text) {
+                help::ask(self, text);
+                return Ok(false);
+            }
             let first = text.split_whitespace().next().unwrap_or("");
             // `cmd {json}` is a programmatic call: the engine runs it with those parameters.
             let json_form = text.trim_start().get(first.len()..).is_some_and(|rest| rest.trim_start().starts_with('{'));

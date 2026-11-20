@@ -423,7 +423,8 @@ pub fn keyboard(app: &mut CadApp, ctx: &egui::Context) {
             egui::Event::Text(t) => {
                 if t == "\t" {
                     tab(app);
-                } else if t == " " && !text_prompt {
+                } else if t == " " && !text_prompt && !(app.session.running.is_none() && crate::help::starts_question(&app.cmd.buffer)) {
+                    // A space ends the entry, except in a question for Help ("how do I ...").
                     submit(app);
                 } else {
                     app.cmd.preedit.clear();
@@ -528,6 +529,11 @@ pub fn submit(app: &mut CadApp) {
         if let Err(e) = app.session.input(Input::Enter) {
             app.session.echo(e.to_string());
         }
+        return;
+    }
+    // A plain-English question opens Help instead of trying to run a command.
+    if !app.session.prompting() && crate::help::is_question(&text) {
+        crate::help::ask(app, &text);
         return;
     }
     if app.session.prompting() {

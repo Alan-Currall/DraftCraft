@@ -13,6 +13,7 @@ mod drafting_polar_increment;
 mod drafting_spacing;
 mod file_tab_titles;
 mod gpu_viewport_stencil;
+mod help_palette;
 mod hidden_command_line;
 mod instant_modals;
 mod lisp_files;

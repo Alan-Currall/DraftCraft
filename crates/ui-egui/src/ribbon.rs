@@ -830,7 +830,7 @@ pub(crate) fn icon_for(cmd: &str) -> Option<Icon> {
     TABS.iter().flat_map(|t| t.panels.iter()).flat_map(all_tools).find(|(_, c, _)| c.eq_ignore_ascii_case(cmd)).map(|(icon, _, _)| icon)
 }
 
-fn all_tools(panel: &RibbonPanel) -> Vec<Tool> {
+pub(crate) fn all_tools(panel: &RibbonPanel) -> Vec<Tool> {
     let mut out: Vec<Tool> = Vec::new();
     let mut push = |b: &Btn| {
         out.push((b.icon, b.cmd, b.label));
@@ -1249,6 +1249,18 @@ fn app_bar(app: &mut CadApp, ui: &mut egui::Ui, bar: Rect, out: &mut Out) {
             scratch.search.clear();
         }
         ui.data_mut(|d| d.insert_temp(id, scratch));
+    }
+    // Help button near the search box: opens the Help panel.
+    let help_r = Rect::from_min_size(pos2(sr.left() - 28.0, cy - 12.0), vec2(24.0, 24.0));
+    let help_resp = ui.interact(help_r, ui.scope_id().with("help_button"), Sense::click());
+    if help_resp.hovered() {
+        p.rect_filled(help_r, 2.0, t.control_hover.gamma_multiply(0.55));
+        p.rect_stroke(help_r, 2.0, Stroke::new(1.0, t.control_hover), egui::StrokeKind::Inside);
+    }
+    icons::paint(&p, help_r.shrink(4.0), Icon::Help, false);
+    icons::describe_control(ui, &help_resp, "Help", None, false);
+    if help_resp.on_hover_text(crate::tl!("Help")).clicked() {
+        out.command = Some("ui.panel.help");
     }
     // Window title, centred, between the toolbar and the search box.
     let title = crate::chrome::window_title(app);
