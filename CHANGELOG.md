@@ -10,6 +10,8 @@ How to write it (see AGENTS.md):
 - Before a release, `cargo xtask version set X.Y.Z` moves the `## Unreleased` lines into `## X.Y.Z`.
 
 ## Unreleased
+### New
+- TXTEXP (Express Tools): explode TEXT and MTEXT into polylines that follow the glyph outlines, keeping the text's layer and properties. Alias: TXTEXPLODE.
 
 ## 2.2.2
 
