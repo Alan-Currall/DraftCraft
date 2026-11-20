@@ -49,6 +49,9 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("ulayers", "Underlay Layers", run_ulayers)
             .params("{} → {underlays: [{handle, name, path, page, status: Loaded|Not Found|Not loaded}]}")
             .noundo(),
+        CommandSpec::new("pdfunderlay.thumb", "PDF Underlay Thumbnail", run_thumb)
+            .params("{path: PDF file, data?: base64 file bytes, page?: number from 1 (default 1), maxSize?: pixels (longer side, default 256)} → {rgba: base64, width, height}")
+            .noundo(),
     ]
 }
 
@@ -296,6 +299,21 @@ const IMPORT: &str = "pdfimport";
 /// The transform taking a page point (x, y) to `origin + x·u + y·v`.
 fn frame(u: Vec2, v: Vec2, origin: Vec2) -> Mat3 {
     Mat3 { a: u.x, b: u.y, c: v.x, d: v.y, e: origin.x, f: origin.y }
+}
+
+/// A small RGBA thumbnail of one PDF page: rendered with a scale that fits `maxSize` pixels on the longer side.
+fn run_thumb(s: &mut Session, p: &Value) -> Result<Value> {
+    let hooks = pdf_hooks().ok_or_else(|| bad("pdfunderlay.thumb", "PDF files can't be read in this build"))?;
+    let path = path_param("pdfunderlay.thumb", p)?;
+    let index = page_param("pdfunderlay.thumb", p)?;
+    let max_side = p.get("maxSize").and_then(Value::as_u64).unwrap_or(256).clamp(16, 4096) as f64;
+    let bytes = file_bytes(s, "pdfunderlay.thumb", p, &path)?;
+    let pages = (hooks.pages)(&bytes).map_err(|e| bad("pdfunderlay.thumb", format!("{path}: {e}")))?;
+    let &(w_pt, h_pt) = pages.get(index).ok_or_else(|| bad("pdfunderlay.thumb", format!("{path} has {} page(s)", pages.len())))?;
+    let want_ppp = if w_pt > h_pt { max_side / w_pt } else { max_side / h_pt };
+    let want_dpi = (want_ppp * POINTS_PER_INCH).clamp(36.0, UNDERLAY_DPI.max(72.0));
+    let raster = (hooks.rasterize)(&bytes, index, want_dpi).map_err(|e| bad("pdfunderlay.thumb", format!("{path}: {e}")))?;
+    Ok(json!({ "rgba": super::file::base64_encode(raster.rgba()), "width": raster.width(), "height": raster.height() }))
 }
 
 /// The standard lineweights in hundredths of a millimetre.
