@@ -31,6 +31,9 @@ fn snapshot(ui: &UiState) -> Result<Value, String> {
     if ui.collapsed_groups.len() > 64 || ui.collapsed_groups.iter().any(|name| name.len() > 256) {
         return Err("collapsedGroups exceeds the workspace size limit".into());
     }
+    if ui.hidden_tools.len() > 256 || ui.hidden_tools.iter().any(|name| name.len() > 256) {
+        return Err("hiddenTools exceeds the workspace size limit".into());
+    }
     if ui.history_lines > 12 {
         return Err("historyLines must be between 0 and 12".into());
     }
@@ -53,6 +56,8 @@ fn snapshot(ui: &UiState) -> Result<Value, String> {
         "showLayerList": ui.show_layer_list,
         "toolsetTab": ui.toolset_tab,
         "collapsedGroups": ui.collapsed_groups,
+        // The tools unticked in a Tool Sets category gear menu ("Show in Tool Sets").
+        "hiddenTools": ui.hidden_tools,
         "propertiesAll": ui.properties_all,
         "inWindowMenu": ui.in_window_menu,
         "historyLines": ui.history_lines,
@@ -262,6 +267,32 @@ mod tests {
         let ui = restored.unwrap();
         assert!(ui.ribbon_minimized && !ui.show_toolsets && !ui.show_palettes);
         assert_eq!(ui.ribbon_tab, "Annotate");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn tools_hidden_in_tool_sets_stay_hidden_after_a_restart() {
+        let directory = temp_dir();
+        let path = directory.join("workspace.json");
+        let (mut store, _, _) = Workspace::at(Some(path.clone()));
+        let mut ui = UiState::default();
+        // Write an initial file so subsequent writes update it.
+        store.save_if_changed(&ui, Instant::now()).unwrap();
+        // Unticking tools in a category gear menu is a change that is written.
+        ui.hidden_tools = vec!["revcloud".into(), "donut".into()];
+        store.save_on_exit(&ui).unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["workspace"]["hiddenTools"], json!(["revcloud", "donut"]));
+        let (_, restored, error) = Workspace::at(Some(path.clone()));
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(restored.unwrap().hidden_tools, ["revcloud", "donut"]);
+        // A file from before the fix (no hiddenTools) still loads, with every tool shown.
+        let mut old = value.clone();
+        old["workspace"].as_object_mut().unwrap().remove("hiddenTools");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let (_, restored, error) = Workspace::at(Some(path.clone()));
+        assert!(error.is_none(), "{error:?}");
+        assert!(restored.unwrap().hidden_tools.is_empty());
         fs::remove_dir_all(directory).unwrap();
     }
 
