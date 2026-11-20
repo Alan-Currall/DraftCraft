@@ -158,6 +158,34 @@ pub fn get(s: &Session, name: &str) -> Option<Value> {
         "CONSTRAINTINFER" => json!(i32::from(s.doc().ok()?.parametric.settings.infer)),
         // Text, as AutoCAD reads it back; the header keeps the index (and CECOLOR_RGB) for DXF.
         "CECOLOR" => json!(crate::cmd::current_color_value(s.doc().ok()?)),
+        // CETRANSPARENCY as text: BYLAYER, BYBLOCK, or a percentage 0..90.
+        "CETRANSPARENCY" => {
+            let h = &s.doc().ok()?.header;
+            if let Some(v) = h.get("CETRANSPARENCY").and_then(|v| v.as_i64()) {
+                match (v >> 24) & 0xff {
+                    1 => json!("BYBLOCK"),
+                    2 => {
+                        let alpha = u32::try_from(v & 0xff).unwrap_or(255);
+                        let opaque = (alpha * 100 + 127) / 255;
+                        json!(u32::saturating_sub(100, opaque).min(90))
+                    }
+                    _ => json!("BYLAYER"),
+                }
+            } else {
+                let t = h.str("CETRANSPARENCY", "ByLayer");
+                if t.eq_ignore_ascii_case("ByBlock") {
+                    json!("BYBLOCK")
+                } else if t.eq_ignore_ascii_case("ByLayer") {
+                    json!("BYLAYER")
+                } else {
+                    // A number string like "50" or "50%".
+                    match t.trim_end_matches('%').trim().parse::<i64>() {
+                        Ok(p) if (0..=90).contains(&p) => json!(p),
+                        _ => json!("BYLAYER"),
+                    }
+                }
+            }
+        }
         // Process-wide font substitution (profile settings, not saved in the drawing).
         "FONTALT" => json!(draftcraft_fonts::ttf::font_alt()),
         "FONTFALLBACK" => json!(draftcraft_fonts::ttf::fallback_fonts()),
@@ -301,6 +329,60 @@ pub fn set(s: &mut Session, name: &str, v: &Value) -> Result<()> {
         }
         // The `color` command's input: ByLayer, ByBlock, a name, an index or a true colour.
         "CECOLOR" => crate::cmd::set_current_color_value(s, v).ok_or_else(bad)?,
+        // CETRANSPARENCY: "ByLayer", "ByBlock" or 0..90 (number or "50"/"50%").
+        "CETRANSPARENCY" => {
+            let set_i = |d: &mut draftcraft_doc::Drawing, raw: i64| {
+                d.header.set_i64("CETRANSPARENCY", raw);
+                // Keep any legacy string out so DXF/DWG writes the integer code only.
+                d.header.vars.remove("CETRANSPARENCY_STR");
+            };
+            let set_text = |d: &mut draftcraft_doc::Drawing, txt: &str| {
+                // Store as integer for writing; remove any stray text form.
+                match txt {
+                    t if t.eq_ignore_ascii_case("ByLayer") => {
+                        d.header.vars.remove("CETRANSPARENCY");
+                    }
+                    t if t.eq_ignore_ascii_case("ByBlock") => set_i(d, 0x0100_0000),
+                    _ => return false,
+                }
+                true
+            };
+            let d = s.doc_mut()?;
+            match v {
+                Value::String(t) => {
+                    let t = t.trim();
+                    // Numeric text like "50" or "50%".
+                    if let Ok(p) = t.trim_end_matches('%').trim().parse::<i64>()
+                        && (0..=90).contains(&p)
+                    {
+                        let alpha = ((100 - p) * 255 / 100).clamp(0, 255);
+                        set_i(d, 0x0200_0000 | alpha);
+                        return Ok(());
+                    }
+                    if set_text(d, t) {
+                        return Ok(());
+                    }
+                    return Err(bad());
+                }
+                Value::Number(n) if n.is_i64() => {
+                    let p = n.as_i64().unwrap_or(-1);
+                    if !(0..=90).contains(&p) {
+                        return Err(bad());
+                    }
+                    let alpha = ((100 - p) * 255 / 100).clamp(0, 255);
+                    set_i(d, 0x0200_0000 | alpha);
+                }
+                Value::Number(n) => {
+                    let p = n.as_f64().unwrap_or(f64::NAN).round() as i64;
+                    if !(0..=90).contains(&p) {
+                        return Err(bad());
+                    }
+                    let alpha = ((100 - p) * 255 / 100).clamp(0, 255);
+                    set_i(d, 0x0200_0000 | alpha);
+                }
+                _ => return Err(bad()),
+            }
+        }
         "OSNAPHATCH" => st.osnaphatch = as_bool(v).ok_or_else(bad)?,
         "ANNOAUTOSCALE" => st.annoautoscale = as_i(v).filter(|i| (-4..=4).contains(i)).ok_or_else(bad)? > 0,
         // A scale of the drawing's list; ANNOAUTOSCALE adds it to the annotative objects.
@@ -480,7 +562,7 @@ pub fn list(s: &Session) -> Value {
     let mut m = serde_json::Map::new();
     if let Ok(d) = s.doc() {
         for (k, v) in &d.header.vars {
-            if matches!(k.as_str(), "ANGBASE" | "SNAPUNIT" | "GRIDUNIT" | "CECOLOR") {
+            if matches!(k.as_str(), "ANGBASE" | "SNAPUNIT" | "GRIDUNIT" | "CECOLOR" | "CETRANSPARENCY") {
                 m.insert(k.clone(), get(s, k).unwrap_or(Value::Null));
             } else if !k.starts_with("DRAFTCRAFT_") {
                 m.insert(k.clone(), serde_json::to_value(v).unwrap_or(Value::Null));

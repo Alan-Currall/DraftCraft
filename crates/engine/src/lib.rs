@@ -270,6 +270,36 @@ impl Session {
     pub fn current_common(&self) -> Common {
         let Ok(d) = self.doc() else { return Common::default() };
         let h = &d.header;
+        // CETRANSPARENCY: ByLayer (default), ByBlock or a percentage 0..=90. The header may hold
+        // the DXF 440 transparency word (an integer) or a name/percentage as text.
+        let transparency = {
+            // Integer form: DXF group 440 encoding (top byte kind, low byte opacity).
+            if let Some(v) = h.get("CETRANSPARENCY").and_then(|v| v.as_i64()) {
+                match (v >> 24) & 0xff {
+                    1 => draftcraft_doc::Transparency::ByBlock,
+                    2 => {
+                        let alpha = u32::try_from(v & 0xff).unwrap_or(255);
+                        let opaque = (alpha * 100 + 127) / 255;
+                        let pct = u8::try_from(100u32.saturating_sub(opaque).min(90)).unwrap_or(90);
+                        draftcraft_doc::Transparency::Percent(pct)
+                    }
+                    _ => draftcraft_doc::Transparency::ByLayer,
+                }
+            } else {
+                // Text form: "ByLayer", "ByBlock" or a percentage "0..90".
+                let t = h.str("CETRANSPARENCY", "ByLayer");
+                if t.eq_ignore_ascii_case("ByBlock") {
+                    draftcraft_doc::Transparency::ByBlock
+                } else if t.eq_ignore_ascii_case("ByLayer") {
+                    draftcraft_doc::Transparency::ByLayer
+                } else {
+                    match t.trim_end_matches('%').trim().parse::<f64>() {
+                        Ok(p) if p.is_finite() && (0.0..=90.0).contains(&p) => draftcraft_doc::Transparency::Percent(p.round() as u8),
+                        _ => draftcraft_doc::Transparency::ByLayer,
+                    }
+                }
+            }
+        };
         Common {
             layer: h.str("CLAYER", "0"),
             color: draftcraft_color::Color::from_aci(h.i64("CECOLOR", 256) as i16),
@@ -277,6 +307,7 @@ impl Session {
             lineweight: draftcraft_doc::Lineweight::from_dxf(h.i64("CELWEIGHT", -1) as i16),
             ltscale: h.f64("CELTSCALE", 1.0),
             plot_style: h.str("CPLOTSTYLE", "ByLayer"),
+            transparency,
             ..Common::default()
         }
     }
