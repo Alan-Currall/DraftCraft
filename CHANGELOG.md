@@ -11,6 +11,9 @@ How to write it (see AGENTS.md):
 
 ## Unreleased
 
+### Fixed
+- HATCH spline-edge boundaries are preserved through DXF and DWG load/save and render correctly (no conversion to straight segments).
+
 ## 2.2.2
 
 ### New

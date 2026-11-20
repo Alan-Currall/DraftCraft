@@ -592,6 +592,7 @@ mod tests {
                 PolyVertex::new(Vec2::new(10.0, 10.0)),
                 PolyVertex::new(Vec2::new(0.0, 10.0)),
             ],
+            edges: Vec::new(),
             outer: true,
             sources: vec![],
         };

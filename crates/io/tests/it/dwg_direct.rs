@@ -763,14 +763,14 @@ fn hatches_drawing() -> draftcraft_doc::Drawing {
         background: None,
         pattern_lines: Vec::new(),
     };
-    let outer = |vertices: Vec<PolyVertex>| HatchLoop { vertices, outer: true, sources: Vec::new() };
+    let outer = |vertices: Vec<PolyVertex>| HatchLoop { vertices, edges: Vec::new(), outer: true, sources: Vec::new() };
     let mut d = Drawing::new_imperial();
     let circle = d
         .add(&Space::Model, Common::default(), EntityKind::Circle(Circle { center: draftcraft_geom::Vec3::new(60.0, 5.0, 0.0), radius: 4.0 }))
         .expect("circle");
     let mut solid_loop = square(0.0, 0.0, 10.0);
     solid_loop[1].bulge = 0.4;
-    let mut solid = hatch("SOLID", vec![outer(solid_loop), HatchLoop { vertices: square(3.0, 3.0, 2.0), outer: false, sources: Vec::new() }]);
+    let mut solid = hatch("SOLID", vec![outer(solid_loop), HatchLoop { vertices: square(3.0, 3.0, 2.0), edges: Vec::new(), outer: false, sources: Vec::new() }]);
     solid.elevation = 1.5;
     let mut ansi = hatch("ANSI31", vec![outer(square(15.0, 0.0, 10.0))]);
     ansi.scale = 2.0;
@@ -792,7 +792,7 @@ fn hatches_drawing() -> draftcraft_doc::Drawing {
         angle: 0.25,
         centered: false,
     });
-    let mut associative = hatch("SOLID", vec![HatchLoop { vertices: Vec::new(), outer: true, sources: vec![circle] }]);
+    let mut associative = hatch("SOLID", vec![HatchLoop { vertices: Vec::new(), edges: Vec::new(), outer: true, sources: vec![circle] }]);
     associative.associative = true;
     if let Some(l) = associative.loops.first_mut() {
         l.vertices = vec![PolyVertex::with_bulge(Vec2::new(56.0, 5.0), 1.0), PolyVertex::with_bulge(Vec2::new(64.0, 5.0), 1.0)];
@@ -1284,7 +1284,7 @@ fn regions_drawing() -> draftcraft_doc::Drawing {
     use draftcraft_geom::{PolyVertex, Vec2};
     let v = |x: f64, y: f64| PolyVertex::new(Vec2::new(x, y));
     let square = |x: f64, y: f64, s: f64| vec![v(x, y), v(x + s, y), v(x + s, y + s), v(x, y + s)];
-    let lp = |vertices: Vec<PolyVertex>, outer: bool| HatchLoop { vertices, outer, sources: Vec::new() };
+    let lp = |vertices: Vec<PolyVertex>, outer: bool| HatchLoop { vertices, edges: Vec::new(), outer, sources: Vec::new() };
     let mut d = Drawing::new_imperial();
     let mut arc = square(0.0, 0.0, 4.0);
     arc[1].bulge = 0.5;

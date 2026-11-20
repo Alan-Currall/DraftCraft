@@ -864,6 +864,7 @@ fn hatch(r: &mut ObjectReader) -> DwgResult<Shape> {
         let flags = r.bl()?;
         derived |= flags & 4 != 0;
         let mut vertices = Vec::new();
+        let mut edges_vec: Vec<draftcraft_doc::HatchEdge> = Vec::new();
         if flags & 2 != 0 {
             // A polyline loop: vertices with or without bulges.
             let has_bulges = r.b()?;
@@ -879,11 +880,11 @@ fn hatch(r: &mut ObjectReader) -> DwgResult<Shape> {
             let n = r.bl()?;
             let n = r.count(n.min(MAX_HATCH_ITEMS), 8, "hatch edge")?;
             for _ in 0..n {
-                hatch_edge(r, &mut vertices)?;
+                hatch_edge(r, &mut vertices, &mut edges_vec)?;
             }
         }
         crate::dxf_read::close_loop(&mut vertices);
-        loops.push(HatchLoop { vertices, outer: flags & 1 != 0, sources: Vec::new() });
+        loops.push(HatchLoop { vertices, edges: edges_vec, outer: flags & 1 != 0, sources: Vec::new() });
         sources.push(r.bl()?);
     }
     let style = r.bs()?;
@@ -937,8 +938,8 @@ fn hatch(r: &mut ObjectReader) -> DwgResult<Shape> {
     Ok(Shape { body: Body::Hatch(Box::new(h), sources, raw), thickness: 0.0, normal })
 }
 
-/// One edge of a hatch's boundary loop, onto its vertices.
-fn hatch_edge(r: &mut ObjectReader, vertices: &mut Vec<PolyVertex>) -> DwgResult<()> {
+/// One edge of a hatch's boundary loop: add it to `vertices` and keep it in `edges`.
+fn hatch_edge(r: &mut ObjectReader, vertices: &mut Vec<PolyVertex>, edges: &mut Vec<draftcraft_doc::HatchEdge>) -> DwgResult<()> {
     let p2 = |r: &mut ObjectReader| -> DwgResult<Vec2> {
         let [x, y] = r.rd2()?;
         Ok(Vec2::new(x, y))
@@ -947,16 +948,19 @@ fn hatch_edge(r: &mut ObjectReader, vertices: &mut Vec<PolyVertex>) -> DwgResult
         1 => {
             let (a, b) = (p2(r)?, p2(r)?);
             crate::dxf_read::push_line(vertices, a, b);
+            edges.push(draftcraft_doc::HatchEdge::Line { start: a, end: b });
         }
         2 => {
             let center = p2(r)?;
             let (radius, start, end, ccw) = (r.bd()?, r.bd()?, r.bd()?, r.b()?);
             crate::dxf_read::push_arc(vertices, center, radius, start, end, ccw);
+            edges.push(draftcraft_doc::HatchEdge::CircularArc { center, radius, start, end, ccw });
         }
         3 => {
             let (center, major) = (p2(r)?, p2(r)?);
             let (ratio, start, end, ccw) = (r.bd()?, r.bd()?, r.bd()?, r.b()?);
             crate::dxf_read::push_ellipse(vertices, center, major, ratio, start, end, ccw);
+            edges.push(draftcraft_doc::HatchEdge::EllipticArc { center, major, ratio, start, end, ccw });
         }
         4 => {
             let degree = usize::try_from(r.bl()?).unwrap_or(3);
@@ -989,7 +993,8 @@ fn hatch_edge(r: &mut ObjectReader, vertices: &mut Vec<PolyVertex>) -> DwgResult
                     let _end_tangent = p2(r)?;
                 }
             }
-            crate::dxf_read::push_spline(vertices, degree, knots, control, weights, &fit);
+            crate::dxf_read::push_spline(vertices, degree, knots.clone(), control.clone(), weights.clone(), &fit);
+            edges.push(draftcraft_doc::HatchEdge::Spline { degree, knots, control, weights, fit });
         }
         other => return Err(draftcraft_dwg::records::Error::format(format!("unknown hatch edge type {other}"))),
     }
