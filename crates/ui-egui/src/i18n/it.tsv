@@ -1210,6 +1210,8 @@ menu	Modify	Edita
 	Batch Publish...	Pubblicazione batch...
 	Scale List...	Elenco scale...
 	Annotative Object Scale	Scala oggetto annotativo
+	Annotation Object Scale List	Elenco scale oggetto annotativo
+	Object Scale List	Elenco scale oggetto
 	Add Current Scale	Aggiungi scala corrente
 	Delete Current Scale	Elimina scala corrente
 	Add/Delete Scales...	Aggiungi/Elimina scale...
@@ -1218,6 +1220,11 @@ menu	Modify	Edita
 	Show Annotative Objects	Mostra oggetti annotativi
 	Current Scale Only	Solo scala corrente
 	All Scales	Tutte le scale
+	Annotative scale	Scala annotativa
+	Add Scales to Object	Aggiungi scale all'oggetto
+	List all scales for selected objects	Elenca tutte le scale per gli oggetti selezionati
+	List scales common to all selected objects only	Elenca solo scale comuni a tutti gli oggetti selezionati
+	Add or delete annotation scales of the selected objects	Aggiungi o elimina le scale annotative degli oggetti selezionati
 	Drawing Recovery Manager...	Gestore ripristino disegni...
 	Tolerance...	Tolleranza...
 	Add Vertex	Aggiungi vertice

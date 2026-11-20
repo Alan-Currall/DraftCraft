@@ -560,6 +560,11 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             app.ui.dialog = Some(id.trim_start_matches("ui.dialog.").to_string());
             Ok(Value::Null)
         }
+        // Explicit open for Annotation Object Scale dialog.
+        "ui.objectscale.dialog" => {
+            let _ = crate::objscale::open(app);
+            Ok(Value::Null)
+        }
         #[cfg(not(target_arch = "wasm32"))]
         "ui.updates.check" => {
             crate::updates_ui::check_now(app);
@@ -585,6 +590,8 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             app.ui.dialog = Some("qselect".into());
             Ok(Value::Null)
         }
+        // OBJECTSCALE typed (no parameters): when annotative objects are selected, open the dialog.
+        "objectscale" if params.is_null() && crate::objscale::open(app) => Ok(Value::Null),
         "units" | "un" if params.is_null() => {
             app.ui.dialog = Some("units".into());
             Ok(Value::Null)
