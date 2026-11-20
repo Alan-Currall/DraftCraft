@@ -533,6 +533,15 @@ fn detail(ui: &mut egui::Ui, topic: &Topic, select: &mut Option<&'static str>, s
         });
     });
     ui.add_space(4.0);
+    // Start button early, just under the title, so it's visible without scrolling.
+    let start_label = format!("Start {}", topic.command.to_ascii_uppercase());
+    let start_resp = ui.button(start_label.clone()).on_hover_text("Close the question box and start this command");
+    // Name the control for accessibility/testing like other buttons.
+    crate::control::record_widget(ui, &start_resp, &start_label, "button", None);
+    if start_resp.clicked() {
+        *start = Some(topic.command);
+    }
+    ui.add_space(6.0);
     match topic.entry {
         Some(e) => {
             ui.label(e.summary);
@@ -573,11 +582,7 @@ fn detail(ui: &mut egui::Ui, topic: &Topic, select: &mut Option<&'static str>, s
             });
         }
     }
-    ui.add_space(8.0);
-    let label = format!("Start {}", topic.command.to_ascii_uppercase());
-    if ui.button(label).on_hover_text("Close the question box and start this command").clicked() {
-        *start = Some(topic.command);
-    }
+    // No second Start button at the bottom: having one at the top keeps tests deterministic.
 }
 
 /// The Help panel's body.
