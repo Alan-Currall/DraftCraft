@@ -1,5 +1,6 @@
 use super::common::T;
 use super::{Color, EntityKind, Gradient, Handle, Hatch, HatchLoop, PolyVertex, Rgb, Spline, Tag, Vec2};
+use draftcraft_doc::HatchEdge;
 
 pub(super) fn hatch(tags: &[Tag], t: &T) -> Option<EntityKind> {
     let (origin, background) = hatch_xdata(tags);
@@ -19,10 +20,10 @@ pub(super) fn hatch(tags: &[Tag], t: &T) -> Option<EntityKind> {
         let flags = get(i)?.i64();
         i += 1;
         let outer = flags & 1 != 0;
-        let mut verts = if flags & 2 != 0 { polyline_boundary(tags, &mut i)? } else { edge_boundary(tags, &mut i)? };
+        let (mut verts, edges) = if flags & 2 != 0 { (polyline_boundary(tags, &mut i)?, Vec::new()) } else { edge_boundary(tags, &mut i)? };
         close_loop(&mut verts);
         let sources = boundary_sources(tags, &mut i);
-        loops.push(HatchLoop { vertices: verts, outer, sources });
+        loops.push(HatchLoop { vertices: verts, edges, outer, sources });
     }
     let solid = solid || pattern.eq_ignore_ascii_case("SOLID");
     let (scale, angle) = (t.fd(41, 1.0), t.fd(52, 0.0).to_radians());
@@ -81,36 +82,38 @@ fn polyline_boundary(tags: &[Tag], index: &mut usize) -> Option<Vec<PolyVertex>>
     Some(vertices)
 }
 
-fn edge_boundary(tags: &[Tag], index: &mut usize) -> Option<Vec<PolyVertex>> {
+fn edge_boundary(tags: &[Tag], index: &mut usize) -> Option<(Vec<PolyVertex>, Vec<HatchEdge>)> {
     let get = |i: usize| tags.get(i);
     seek_code(tags, index, 93);
     let count = get(*index)?.i64().clamp(0, 1_000_000) as usize;
     *index += 1;
     let mut vertices = Vec::new();
+    let mut edges = Vec::new();
     for _ in 0..count {
         seek_code(tags, index, 72);
         let kind = get(*index)?.i64();
         *index += 1;
         match kind {
-            1 => line_edge(tags, index, &mut vertices),
-            2 => circular_edge(tags, index, &mut vertices),
-            3 => elliptic_edge(tags, index, &mut vertices),
-            4 => spline_edge(tags, index, &mut vertices),
+            1 => line_edge(tags, index, &mut vertices, &mut edges),
+            2 => circular_edge(tags, index, &mut vertices, &mut edges),
+            3 => elliptic_edge(tags, index, &mut vertices, &mut edges),
+            4 => spline_edge(tags, index, &mut vertices, &mut edges),
             _ => {}
         }
     }
-    Some(vertices)
+    Some((vertices, edges))
 }
 
 fn edge_value(tags: &[Tag], index: usize) -> f64 {
     tags.get(index).map(Tag::f64).unwrap_or(0.0)
 }
 
-fn line_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>) {
+fn line_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>, edges: &mut Vec<HatchEdge>) {
     let start = Vec2::new(edge_value(tags, *index), edge_value(tags, *index + 1));
     let end = Vec2::new(edge_value(tags, *index + 2), edge_value(tags, *index + 3));
     *index += 4;
     push_line(vertices, start, end);
+    edges.push(HatchEdge::Line { start, end });
 }
 
 /// A boundary's line edge, joined to the edge before it.
@@ -121,7 +124,7 @@ pub(crate) fn push_line(vertices: &mut Vec<PolyVertex>, start: Vec2, end: Vec2) 
     vertices.push(PolyVertex::new(end));
 }
 
-fn circular_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>) {
+fn circular_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>, edges: &mut Vec<HatchEdge>) {
     let center = Vec2::new(edge_value(tags, *index), edge_value(tags, *index + 1));
     let radius = edge_value(tags, *index + 2);
     let start_angle = edge_value(tags, *index + 3).to_radians();
@@ -129,6 +132,7 @@ fn circular_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>
     let ccw = tags.get(*index + 5).map(Tag::i64).unwrap_or(1) != 0;
     *index += 6;
     push_arc(vertices, center, radius, start_angle, end_angle, ccw);
+    edges.push(HatchEdge::CircularArc { center, radius, start: start_angle, end: end_angle, ccw });
 }
 
 /// A boundary's circular arc edge (angles in radians, measured the arc's own way round), as a
@@ -153,7 +157,7 @@ pub(crate) fn push_arc(vertices: &mut Vec<PolyVertex>, center: Vec2, radius: f64
     vertices.push(PolyVertex::new(end_point));
 }
 
-fn elliptic_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>) {
+fn elliptic_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>, edges: &mut Vec<HatchEdge>) {
     let center = Vec2::new(edge_value(tags, *index), edge_value(tags, *index + 1));
     let major = Vec2::new(edge_value(tags, *index + 2), edge_value(tags, *index + 3));
     let ratio = edge_value(tags, *index + 4);
@@ -162,6 +166,7 @@ fn elliptic_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>
     let ccw = tags.get(*index + 7).filter(|tag| tag.code == 73).map(Tag::i64).unwrap_or(1) != 0;
     *index += 8;
     push_ellipse(vertices, center, major, ratio, start_angle, end_angle, ccw);
+    edges.push(HatchEdge::EllipticArc { center, major, ratio, start: start_angle, end: end_angle, ccw });
 }
 
 /// A boundary's elliptical arc edge (angles in radians), as the points of its tessellation.
@@ -176,7 +181,7 @@ pub(crate) fn push_ellipse(vertices: &mut Vec<PolyVertex>, center: Vec2, major: 
     vertices.extend(points.into_iter().map(PolyVertex::new));
 }
 
-fn spline_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>) {
+fn spline_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>, edges: &mut Vec<HatchEdge>) {
     let get = |i: usize| tags.get(i);
     let mut degree = 3;
     let (mut knot_count, mut control_count) = (0, 0);
@@ -213,7 +218,8 @@ fn spline_edge(tags: &[Tag], index: &mut usize, vertices: &mut Vec<PolyVertex>) 
             *index += 2;
         }
     }
-    push_spline(vertices, degree, knots, control, weights, &fit);
+    push_spline(vertices, degree, knots.clone(), control.clone(), weights.clone(), &fit);
+    edges.push(HatchEdge::Spline { degree, knots, control, weights, fit });
 }
 
 /// A boundary's spline edge, as the points of its tessellation: rebuilt from its fit points or

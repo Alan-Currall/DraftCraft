@@ -108,11 +108,7 @@ fn sample() -> Drawing {
         EntityKind::Hatch(Hatch {
             pattern: "ANSI31".into(),
             solid: false,
-            loops: vec![HatchLoop {
-                vertices: vec![PolyVertex::new(Vec2::ZERO), PolyVertex::new(Vec2::new(2.0, 0.0)), PolyVertex::new(Vec2::new(2.0, 2.0))],
-                outer: true,
-                sources: Vec::new(),
-            }],
+            loops: vec![HatchLoop { vertices: vec![PolyVertex::new(Vec2::ZERO), PolyVertex::new(Vec2::new(2.0, 0.0)), PolyVertex::new(Vec2::new(2.0, 2.0))], edges: Vec::new(), outer: true, sources: Vec::new() }],
             scale: 1.0,
             angle: 0.0,
             associative: false,
@@ -2028,7 +2024,7 @@ fn gradient_sample() -> (Drawing, Vec<Option<Gradient>>) {
         let h = Hatch {
             pattern: "SOLID".into(),
             solid: true,
-            loops: vec![HatchLoop { vertices: square.clone(), outer: true, sources: Vec::new() }],
+            loops: vec![HatchLoop { vertices: square.clone(), edges: Vec::new(), outer: true, sources: Vec::new() }],
             scale: 1.0,
             angle: 0.0,
             associative: false,

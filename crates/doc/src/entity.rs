@@ -50,7 +50,7 @@ pub use block::{Attrib, AttribModes, AttribProps, Insert, MultilineAttrib, mtext
 pub use common::{Common, Handle, Lineweight, RawTag, Transparency};
 pub use curves::{Arc, Circle, Ellipse, Face3d, Line, LwPolyline, Point, PolyfaceMesh, Polyline3d, RayLine, Solid};
 pub use dim::{AssocSnap, DimAssoc, DimBreak, DimKind, DimMarks, Dimension, Inspection, JoggedRadius, Leader, MLeader};
-pub use fill::{Gradient, Hatch, HatchLoop};
+pub use fill::{Gradient, Hatch, HatchEdge, HatchLoop};
 pub use layout::{Image, POINTS_PER_INCH, Table, TableCell, Underlay, UnderlayKind, Viewport};
 pub use text::{HAlign, MText, MTextColumnType, MTextColumns, Text, VAlign};
 pub use wipeout::Wipeout;

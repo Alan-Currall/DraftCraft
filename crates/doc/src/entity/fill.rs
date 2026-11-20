@@ -1,10 +1,25 @@
 use super::common::Handle;
 use super::{Color, Deserialize, PolyVertex, Serialize, Vec2, one};
 
-/// A hatch boundary loop: closed polyline with bulges.
+/// One edge of a hatch boundary loop, kept for fidelity when reading/writing DXF/DWG edge
+/// boundaries (lines, circular or elliptic arcs, splines). Rendering and most editing use
+/// `vertices` — a closed polyline with bulges — built from these edges when present.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum HatchEdge {
+    Line { start: Vec2, end: Vec2 },
+    CircularArc { center: Vec2, radius: f64, start: f64, end: f64, ccw: bool },
+    EllipticArc { center: Vec2, major: Vec2, ratio: f64, start: f64, end: f64, ccw: bool },
+    Spline { degree: usize, knots: Vec<f64>, control: Vec<Vec2>, #[serde(default, skip_serializing_if = "Vec::is_empty")] weights: Vec<f64>, #[serde(default, skip_serializing_if = "Vec::is_empty")] fit: Vec<Vec2> },
+}
+
+/// A hatch boundary loop: closed polyline with bulges, with optional exact edges for file fidelity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HatchLoop {
     pub vertices: Vec<PolyVertex>,
+    /// Exact edges as the file stored them (when present). Empty for polyline boundaries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<HatchEdge>,
     #[serde(default)]
     pub outer: bool,
     /// The objects the loop was made from (DXF group 97 count, 330 handles): an associative

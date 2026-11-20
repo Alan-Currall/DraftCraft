@@ -796,7 +796,7 @@ mod hatch_pattern_pick_tests {
 
     fn square(lo: f64, hi: f64, outer: bool) -> HatchLoop {
         let vertices = [(lo, lo), (hi, lo), (hi, hi), (lo, hi)].iter().map(|&(x, y)| PolyVertex::new(Vec2::new(x, y))).collect();
-        HatchLoop { vertices, outer, sources: Vec::new() }
+        HatchLoop { vertices, edges: Vec::new(), outer, sources: Vec::new() }
     }
 
     fn ansi31_hatch(loops: Vec<HatchLoop>) -> Drawing {
@@ -859,11 +859,7 @@ mod hatch_pattern_pick_tests {
 
     #[test]
     fn solid_hatch_is_picked_inside_its_fill_not_its_bounding_rectangle() {
-        let tri = HatchLoop {
-            vertices: [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)].iter().map(|&(x, y)| PolyVertex::new(Vec2::new(x, y))).collect(),
-            outer: true,
-            sources: Vec::new(),
-        };
+        let tri = HatchLoop { vertices: [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)].iter().map(|&(x, y)| PolyVertex::new(Vec2::new(x, y))).collect(), edges: Vec::new(), outer: true, sources: Vec::new() };
         let d = solid_hatch(vec![tri], 0);
         // The empty corner of the bounding rectangle, 5.66 from the hypotenuse.
         assert!(pick(&d, &Space::Model, Vec2::new(9.0, 9.0), 0.25).is_none());

@@ -656,15 +656,74 @@ fn write_hatch_entity(w: &mut W, d: &Drawing, e: &Entity, owner: &str, paper: bo
         w.i(71, i64::from(h.associative));
         w.i(91, h.loops.len() as i64);
         for l in &h.loops {
-            w.i(92, 2 | if l.outer { 1 } else { 0 });
-            let has_bulge = l.vertices.iter().any(|v| v.bulge != 0.0);
-            w.i(72, i64::from(has_bulge));
-            w.i(73, 1);
-            w.i(93, l.vertices.len() as i64);
-            for v in &l.vertices {
-                w.p2(10, v.p);
-                if has_bulge {
-                    w.f(42, v.bulge);
+            if l.edges.is_empty() {
+                // Polyline boundary (with bulges).
+                w.i(92, 2 | if l.outer { 1 } else { 0 });
+                let has_bulge = l.vertices.iter().any(|v| v.bulge != 0.0);
+                w.i(72, i64::from(has_bulge));
+                w.i(73, 1);
+                w.i(93, l.vertices.len() as i64);
+                for v in &l.vertices {
+                    w.p2(10, v.p);
+                    if has_bulge {
+                        w.f(42, v.bulge);
+                    }
+                }
+            } else {
+                // Edge-based boundary: write each edge with its parameters.
+                w.i(92, if l.outer { 1 } else { 0 });
+                w.i(93, l.edges.len() as i64);
+                for eedge in &l.edges {
+                    match eedge {
+                        draftcraft_doc::HatchEdge::Line { start, end } => {
+                            w.i(72, 1);
+                            w.p2(10, *start);
+                            w.p2(11, *end);
+                        }
+                        draftcraft_doc::HatchEdge::CircularArc { center, radius, start, end, ccw } => {
+                            w.i(72, 2);
+                            w.p2(10, *center);
+                            w.f(40, *radius);
+                            w.f(50, start.to_degrees());
+                            w.f(51, end.to_degrees());
+                            w.i(73, i64::from(*ccw));
+                        }
+                        draftcraft_doc::HatchEdge::EllipticArc { center, major, ratio, start, end, ccw } => {
+                            w.i(72, 3);
+                            w.p2(10, *center);
+                            w.p2(11, *major);
+                            w.f(40, *ratio);
+                            w.f(50, start.to_degrees());
+                            w.f(51, end.to_degrees());
+                            w.i(73, i64::from(*ccw));
+                        }
+                        draftcraft_doc::HatchEdge::Spline { degree, knots, control, weights, fit } => {
+                            w.i(72, 4);
+                            w.i(94, *degree as i64);
+                            w.i(73, i64::from(!weights.is_empty()));
+                            // 74 periodic flag: leave 0 (not periodic) — DXF reader infers continuity from data.
+                            w.i(74, 0);
+                            w.i(95, knots.len() as i64);
+                            w.i(96, control.len() as i64);
+                            for k in knots {
+                                w.f(40, *k);
+                            }
+                            for (i, c) in control.iter().enumerate() {
+                                w.p2(10, *c);
+                                if let Some(wt) = weights.get(i) {
+                                    w.f(42, *wt);
+                                }
+                            }
+                            if !fit.is_empty() {
+                                w.i(97, fit.len() as i64);
+                                for p in fit {
+                                    w.p2(11, *p);
+                                }
+                            } else {
+                                w.i(97, 0);
+                            }
+                        }
+                    }
                 }
             }
             // Source boundary objects of an associative hatch (the ones still beside it, in
