@@ -53,7 +53,11 @@ pub fn plot(d: &Drawing, space: &Space, opts: &Value) -> Result<Vec<u8>> {
 /// The sheet a plot draws on (a model-space plot's printable area inside the device margins).
 fn sheet(d: &Drawing, space: &Space, o: &PdfOptions) -> Result<(Sheet, draftcraft_doc::PageSetup)> {
     let page = pdf::page_for(d, space, o)?;
-    Ok((Sheet::from_page(&page, paper::page_unit_mm(d, &page)), page))
+    let sh = match space {
+        Space::Paper(n) => paper::sheet_for(d, n, &page),
+        _ => Sheet::from_page(&page, paper::page_unit_mm(d, &page)),
+    };
+    Ok((sh, page))
 }
 
 /// Paper units per drawing unit fitting `b` into the printable area; with `fit: false`, the
@@ -104,7 +108,8 @@ fn png(d: &Drawing, space: &Space, opts: &Value) -> Result<Vec<u8>> {
         // A window is placed like model space, whatever the space (as in PDF).
         pdf::placement(if window.is_some() { &Space::Model } else { space }, &b, fit, &sheet, &o)
     } else {
-        (Vec2::ZERO, Vec2::ZERO)
+        // 1:1 layout: place so the sheet origin appears at the image origin.
+        (Vec2::ZERO, Vec2::ZERO - sheet.origin)
     };
     // The world point at the image centre, mapped through the same paper origin as PDF.
     let center = from + (half - to) / s;

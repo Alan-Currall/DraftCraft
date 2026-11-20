@@ -541,7 +541,10 @@ fn sheet(d: &Drawing, space: &Space, o: &PdfOptions, links_to: &[(Handle, String
     let o = &saved;
     let page = page_for(d, space, o)?;
     let unit_mm = paper::page_unit_mm(d, &page);
-    let sheet = Sheet::from_page(&page, unit_mm);
+    let sheet = match space.layout() {
+        Some(n) => paper::sheet_for(d, n, &page),
+        None => Sheet::from_page(&page, unit_mm),
+    };
     let lineweights = o.lineweights.unwrap_or(if space.is_paper() { page.lineweights } else { true });
     let plot_style_table = draftcraft_doc::plot_style_table(d, &page.plot_style_table).map(std::sync::Arc::new);
     let ropts = draftcraft_render::Options {
@@ -577,7 +580,8 @@ fn sheet(d: &Drawing, space: &Space, o: &PdfOptions, links_to: &[(Handle, String
         let (from, to) = placement(by, &b, fit, &sheet, o);
         Map { from, s, to, k }
     } else {
-        Map { from: Vec2::ZERO, s, to: Vec2::ZERO, k }
+        // 1:1 layout: place world coordinates so the sheet's lower-left ends up at (0,0).
+        Map { from: Vec2::ZERO, s, to: Vec2::ZERO - sheet.origin, k }
     };
     // Plot style ends, joins and fill patterns at the plot scale (a layout's are already drawn).
     let mut list = list;
