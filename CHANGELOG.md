@@ -11,6 +11,9 @@ How to write it (see AGENTS.md):
 
 ## Unreleased
 
+### New
+- Blocks palette: browse blocks in the current drawing, a recent list, and other drawings; filter by name, see thumbnails, and insert with explode and on‑screen placement.
+
 ## 2.2.2
 
 ### New

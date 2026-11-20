@@ -720,6 +720,16 @@ menu	Modify	Edita
 	Raster Image	Immagine raster
 	Ray	Semiretta
 	Read-only	Sola lettura
+	Blocks	Blocchi
+	Current Drawing	Disegno corrente
+	Recent	Recenti
+	Libraries	Librerie
+	Filter blocks	Filtra blocchi
+	Explode	Esplodi
+	No drawing open.	Nessun disegno aperto.
+	No recent blocks.	Nessun blocco recente.
+	Drawing file	File disegno
+	Open a drawing to see its blocks.	Apri un disegno per vedere i suoi blocchi.
 	Real name	Nome reale
 	Realtime	Tempo reale
 	Reassociate Dimensions	Riassocia quote

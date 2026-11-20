@@ -599,6 +599,16 @@
 	Raster Images	光栅图像
 	Ray	射线
 	Read-only	只读
+	Blocks	块
+	Current Drawing	当前图形
+	Recent	最近
+	Libraries	库
+	Filter blocks	筛选块
+	Explode	分解
+	No drawing open.	没有打开的图形。
+	No recent blocks.	没有最近的块。
+	Drawing file	图形文件
+	Open a drawing to see its blocks.	打开一个图形以查看其块。
 	Real name	真实姓名
 	Realtime	实时
 	Reassociate Dimensions	重新关联标注

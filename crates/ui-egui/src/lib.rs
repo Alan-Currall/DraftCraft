@@ -152,6 +152,8 @@ pub struct UiState {
     pub workspaces: Vec<workspaces::SavedWorkspace>,
     /// The current workspace's name; empty: the built-in one.
     pub current_workspace: String,
+    /// INSERT exploded from the Blocks palette.
+    pub blocks_explode: bool,
 }
 
 /// A DXF/DWG file version (2000 … 2018).
@@ -238,6 +240,7 @@ impl Default for UiState {
             hidden_tabs: Vec::new(),
             workspaces: Vec::new(),
             current_workspace: String::new(),
+            blocks_explode: false,
         }
     }
 }
@@ -538,6 +541,8 @@ impl CadApp {
             "saveVersion": self.ui.save_version,
             "quickcalc": self.quickcalc.prefs(),
             "toolPalettes": self.side_palettes.tool_palettes.prefs(),
+            "blocksPalette": self.side_palettes.blocks.prefs(),
+            "blocksExplode": self.ui.blocks_explode,
         });
         if self.spacemouse.settings != spacemouse::Settings::default() {
             prefs["spacemouse"] = json!(self.spacemouse.settings);
@@ -562,6 +567,12 @@ impl CadApp {
         }
         if let Some(tp) = v.get("toolPalettes") {
             self.side_palettes.tool_palettes.load_prefs(tp);
+        }
+        if let Some(bp) = v.get("blocksPalette") {
+            self.side_palettes.blocks.load_prefs(bp);
+        }
+        if let Some(be) = v.get("blocksExplode").and_then(Value::as_bool) {
+            self.ui.blocks_explode = be;
         }
         if let Some(prefs) = v.get("spacemouse") {
             let _ = self.spacemouse.load_settings(prefs);
