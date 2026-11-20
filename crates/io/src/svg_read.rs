@@ -852,7 +852,7 @@ fn parse_path(d: &str) -> Result<Vec<Subpath>> {
                 if c.eq_ignore_ascii_case(&b'z') {
                     if !segs.is_empty() {
                         out.push(Subpath { start, segs, closed: true });
-                        segs = Vec::new();
+                        segs.clear();
                     }
                     cur = start;
                     cmd = 0;
@@ -898,7 +898,7 @@ fn parse_path(d: &str) -> Result<Vec<Subpath>> {
             b'M' => {
                 if !segs.is_empty() {
                     out.push(Subpath { start, segs, closed: false });
-                    segs = Vec::new();
+                    segs.clear();
                 }
                 cur = point(args[0], args[1]);
                 start = cur;

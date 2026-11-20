@@ -315,7 +315,7 @@ fn face_z(c: &[Vec3; 4], p: Vec2) -> Option<f64> {
             return None;
         }
         let inside = draftcraft_geom::point_in_polygon(&[a.xy(), b.xy(), d.xy()], p);
-        inside.then(|| a.z - (n.x * (p.x - a.x) + n.y * (p.y - a.y)) / n.z)
+        inside.then_some(a.z - (n.x * (p.x - a.x) + n.y * (p.y - a.y)) / n.z)
     };
     tri(c[0], c[1], c[2]).or_else(|| if c[3] == c[2] { None } else { tri(c[0], c[2], c[3]) })
 }
