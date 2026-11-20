@@ -84,6 +84,14 @@ pub(super) fn ensure_list(app: &mut CadApp, xf: &Xf, views: &[(Bounds2, f64)], c
         // The model space seen through a layout's active viewport is drawn apart: rebuilt too.
         app.canvas.vp.key = None;
     }
+    // Ask the engine to refresh PDF underlay rasters for this zoom band so they stay sharp.
+    // Use the finest view on screen, in device pixels per drawing unit.
+    let ppu = views.iter().map(|(_, v)| (1.0 / v.max(1e-300)) * f64::from(ctx.pixels_per_point())).fold(0.0, f64::max);
+    let space = match app.session.space() {
+        draftcraft_engine::doc::Space::Model => serde_json::Value::String("Model".into()),
+        draftcraft_engine::doc::Space::Paper(n) => serde_json::Value::String(n),
+    };
+    let _ = app.session.execute("pdfunderlay.refresh", &serde_json::json!({ "pxPerUnit": ppu, "space": space }));
     let Ok(st) = app.session.state() else { return };
     // Rebuild when the drawing changes, the zoom moves by more than 2x (tessellation band) or a
     // view leaves the area the list was built for.

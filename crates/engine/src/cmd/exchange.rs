@@ -352,6 +352,11 @@ fn run_preview(s: &mut Session, p: &Value) -> Result<Value> {
         px_per_mm: if lineweights && px_per_mm.is_finite() { px_per_mm } else { 0.0 },
         antialias: true,
     };
+    // Refresh PDF underlay rasters to suit the preview zoom for crisper results.
+    let _ = s.execute(
+        "pdfunderlay.refresh",
+        &serde_json::json!({ "pxPerUnit": view.scale, "space": match &space { Space::Model => "Model", Space::Paper(n) => n } }),
+    );
     let mut pm = draftcraft_render::raster::render(&list, &view, &ro).ok_or_else(|| bad("preview", "rendering the preview failed"))?;
     // A placed plot (fitted, or a saved window) shows only inside the printable area, as the PDF and PNG plots clip it.
     if fit || saved.window.is_some() || space == Space::Model {
