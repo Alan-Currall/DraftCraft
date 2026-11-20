@@ -90,6 +90,11 @@ impl eframe::App for App {
         self.cad.system_animations = self.system_animations.current();
         // Consume control/open/screenshot queues and time-based autosave, including hidden ticks.
         self.cad.guarded_logic(ctx);
+        // Mirror a new in-app clipboard copy to the system pasteboard (macOS: DWG + UTF‑8).
+        #[cfg(target_os = "macos")]
+        {
+            super::system_pasteboard::mirror_if_new(&self.cad.session);
+        }
         // Host frame work runs here, once per frame, and so also on a hidden logic-only tick (which
         // never reaches `App::ui`): native menus stay current, the spacemouse still navigates and a
         // workspace changed while hidden is persisted. `current_pass_index()` is zero on the first

@@ -137,6 +137,13 @@ pub fn system_text(s: &Session) -> Option<String> {
         return None;
     }
     let hooks = super::file::io()?;
+    let d = system_drawing_impl(s);
+    let bytes = (hooks.write)(&d, "clipboard.dxf").ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// A minimal Drawing holding the clipboard entities and required definitions, with $INSBASE set.
+fn system_drawing_impl(s: &Session) -> Drawing {
     let mut d = Drawing::new_imperial();
     let renames = match &s.clipboard_source {
         Some(c) => {
@@ -151,8 +158,15 @@ pub fn system_text(s: &Session) -> Option<String> {
         d.ensure_layer(&e.common.layer);
         d.model.push(e);
     }
-    let bytes = (hooks.write)(&d, "clipboard.dxf").ok()?;
-    String::from_utf8(bytes).ok()
+    d
+}
+
+/// The clipboard Drawing built the same way as [`system_text`], for host payload writers.
+pub fn system_drawing(s: &Session) -> Option<Drawing> {
+    if s.clipboard.is_empty() || s.clipboard.len() > MAX_SYSTEM_OBJECTS {
+        return None;
+    }
+    Some(system_drawing_impl(s))
 }
 
 /// Make DXF text (from the system clipboard) the clipboard: its model space objects with what
