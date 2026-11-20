@@ -22,6 +22,7 @@ pub enum Panel {
     DesignCenter,
     ToolPalettes,
     SheetSet,
+    Help,
 }
 
 impl Panel {
@@ -37,6 +38,7 @@ impl Panel {
             Self::DesignCenter => "designCenter",
             Self::ToolPalettes => "toolPalettes",
             Self::SheetSet => "sheetSet",
+            Self::Help => "help",
         }
     }
     fn label(self) -> &'static str {
@@ -50,6 +52,7 @@ impl Panel {
             Self::DesignCenter => "DesignCenter",
             Self::ToolPalettes => "Tool Palettes",
             Self::SheetSet => "Sheet Set Manager",
+            Self::Help => "Help",
         }
     }
     /// The icon a palette shows in a column collapsed to icons.
@@ -65,10 +68,11 @@ impl Panel {
             Self::DesignCenter => Some(Icon::DesignCenter),
             Self::ToolPalettes => Some(Icon::ToolPalette),
             Self::SheetSet => Some(Icon::SheetSet),
+            Self::Help => Some(Icon::Help),
         }
     }
     /// Palettes outside the default arrangement, opened on request (QUICKCALC).
-    pub const ON_DEMAND: &[Self] = &[Self::QuickCalc, Self::DesignCenter, Self::ToolPalettes, Self::SheetSet];
+    pub const ON_DEMAND: &[Self] = &[Self::QuickCalc, Self::DesignCenter, Self::ToolPalettes, Self::SheetSet, Self::Help];
 }
 
 /// The drawing view never moves, floats, closes or takes tabs; palettes dock beside it.
@@ -160,7 +164,7 @@ fn home_anchor(layout: &Layout<Panel>, panel: Panel) -> Option<(Panel, bool)> {
         Panel::Layers => &[(Panel::Properties, false), (Panel::ExternalRefs, false)],
         Panel::Properties => &[(Panel::Layers, true), (Panel::ExternalRefs, false)],
         Panel::ExternalRefs => &[(Panel::Properties, true), (Panel::Layers, true)],
-        Panel::QuickCalc | Panel::DesignCenter | Panel::ToolPalettes | Panel::SheetSet => {
+        Panel::QuickCalc | Panel::DesignCenter | Panel::ToolPalettes | Panel::SheetSet | Panel::Help => {
             &[(Panel::ExternalRefs, true), (Panel::Properties, true), (Panel::Layers, true)]
         }
     };
@@ -414,6 +418,7 @@ impl DockContent<Panel> for Panels<'_> {
             }
             Panel::ToolSets => crate::palettes::toolsets(app, ui),
             Panel::QuickCalc => crate::palettes::quickcalc::show(app, ui),
+            Panel::Help => crate::help::show(app, ui),
             Panel::Layers => {
                 egui::ScrollArea::vertical()
                     .id_salt("dock-layers")
@@ -457,6 +462,7 @@ fn panel_limits(panel: &Panel) -> PanelLimits {
     let (min, max_width) = match panel {
         Panel::Canvas => (egui::vec2(300.0, 180.0), 1_000_000.0),
         Panel::QuickCalc => (egui::vec2(240.0, 160.0), 600.0),
+        Panel::Help => (egui::vec2(260.0, 240.0), 720.0),
         Panel::ToolSets => (egui::vec2(220.0, 150.0), 480.0),
         Panel::Layers | Panel::Properties | Panel::ExternalRefs => (egui::vec2(220.0, 100.0), 720.0),
         Panel::DesignCenter | Panel::ToolPalettes | Panel::SheetSet => (egui::vec2(220.0, 160.0), 900.0),

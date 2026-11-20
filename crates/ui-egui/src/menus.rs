@@ -75,7 +75,8 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.dialog.about", "About DraftCraft", &["Help", "About DraftCraft"], None),
     #[cfg(not(target_arch = "wasm32"))]
     ("ui.updates.check", "Check for Updates...", &["Help", "Check for Updates..."], None),
-    ("ui.dialog.commands", "Command Reference", &["Help", "DraftCraft Help"], Some("F1")),
+    ("ui.panel.help", "DraftCraft Help", &["Help", "DraftCraft Help"], Some("F1")),
+    ("ui.dialog.commands", "Command Reference", &["Help", "Command Reference"], None),
     ("ui.whatsnew", "What's New", &["Help", "What's New"], None),
     ("ui.toggle.history", "Command History", &["Window", "Command History"], Some("F2")),
     ("ui.cmdline.lines", "Command Line History Lines", &[], None),
@@ -169,6 +170,10 @@ fn route_ui_subsystems(app: &mut CadApp, id: &str, params: &Value) -> Option<Res
     }
     if let Some(r) = crate::options::config_route(app, id, params) {
         return Some(r);
+    }
+    // F1, Help ▸ DraftCraft Help and typed HELP or ? open the Help panel.
+    if id == "ui.panel.help" || (matches!(id, "help" | "?") && params.is_null()) {
+        return Some(crate::help::command(app, params));
     }
     None
 }
@@ -958,7 +963,7 @@ pub(crate) fn builtin_shortcuts() -> Vec<(egui::KeyboardShortcut, &'static str)>
         (sc(cmd, Key::Num1), "ui.panel.properties"),
         (sc(cmd, Key::Num3), "ui.toggle.toolsets"),
         (sc(cmd, Key::Num9), "ui.toggle.cmdline"),
-        (sc(Modifiers::NONE, Key::F1), "ui.dialog.commands"),
+        (sc(Modifiers::NONE, Key::F1), "ui.panel.help"),
         (sc(Modifiers::NONE, Key::F2), "ui.toggle.history"),
         (sc(Modifiers::NONE, Key::F3), "osnap"),
         (sc(Modifiers::NONE, Key::F5), "isoplane"),

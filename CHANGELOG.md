@@ -11,6 +11,9 @@ How to write it (see AGENTS.md):
 
 ## Unreleased
 
+### New
+- Help panel: press F1, type HELP or a natural question at the command line (e.g. “how do I draw a line”), use Help ▸ DraftCraft Help, or click the toolbar Help button to open a searchable, plain‑English Help. Results show the tool’s icon, a summary, numbered steps, where to find it (command, menu, Tool Sets, ribbon, shortcut), tips, related topics, and a Start button that runs it. The old Command Reference remains available, and HELP is listed there.
+
 ## 2.2.2
 
 ### New
