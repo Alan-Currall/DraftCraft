@@ -27,6 +27,9 @@ mod spacemouse;
 mod system_animations;
 mod workspace;
 
+#[cfg(target_os = "macos")]
+mod system_pasteboard;
+
 use draftcraft_engine::Session;
 use draftcraft_ui_egui::switch::Switch;
 use draftcraft_ui_egui::{CadApp, Services, i18n};
@@ -87,6 +90,11 @@ impl eframe::App for App {
         self.cad.system_animations = self.system_animations.current();
         // Consume control/open/screenshot queues and time-based autosave, including hidden ticks.
         self.cad.guarded_logic(ctx);
+        // Mirror a new in-app clipboard copy to the system pasteboard (macOS: DWG + UTF‑8).
+        #[cfg(target_os = "macos")]
+        {
+            super::system_pasteboard::mirror_if_new(&self.cad.session);
+        }
         // Host frame work runs here, once per frame, and so also on a hidden logic-only tick (which
         // never reaches `App::ui`): native menus stay current, the spacemouse still navigates and a
         // workspace changed while hidden is persisted. `current_pass_index()` is zero on the first
@@ -350,6 +358,8 @@ fn main() -> eframe::Result {
         }
     }
     install_io();
+    #[cfg(target_os = "macos")]
+    system_pasteboard::install();
     draftcraft_engine::settings_dir::set(vars.config_dir.clone());
     if let Some(dir) = &vars.config_dir {
         draftcraft_ui_egui::fault::install_report_hook(dir.join(draftcraft_ui_egui::fault::REPORT_DIR));

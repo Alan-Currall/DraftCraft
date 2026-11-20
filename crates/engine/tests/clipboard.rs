@@ -325,3 +325,37 @@ fn clipboard_travels_as_text() {
     assert!(t.doc().unwrap().block("DOOR").is_some() && t.doc().unwrap().layer("HINGE").is_some());
     let _ = a;
 }
+
+#[test]
+fn plain_text_paste_becomes_mtext() {
+    let mut s = Session::empty();
+    s.open_drawing(Drawing::new_metric(), "A", None);
+    // Load plain text into the clipboard and paste it at a point.
+    assert!(clipboard::load_plain_mtext(&mut s, "Hello\nworld"));
+    assert_eq!(s.clipboard.len(), 1, "clipboard holds one MTEXT");
+    if let Some(e) = s.clipboard.first() {
+        match &e.kind {
+            EntityKind::MText(m) => {
+                assert!(m.contents.contains("Hello\\Pworld"), "newlines become \\P: {}", m.contents);
+                assert_eq!(s.clipboard_base, Vec2::ZERO, "base point is the origin for plain text");
+            }
+            _ => panic!("expected MTEXT"),
+        }
+    } else {
+        panic!("clipboard is empty");
+    }
+}
+
+#[test]
+fn system_paste_hook_can_offer_text_or_drawing() {
+    // Install a one-off hook that offers text; ignore error when already set by another test.
+    draftcraft_engine::cmd::clipboard::set_system_paste(|| Some(clipboard::SystemPaste::Text("Alpha\nBeta".into())));
+    let mut s = Session::empty();
+    s.open_drawing(Drawing::new_metric(), "A", None);
+    // Before Paste, the engine prepares a system paste; here we call it directly.
+    assert!(clipboard::prepare_system_paste(&mut s));
+    assert_eq!(s.clipboard.len(), 1);
+    // PASTECLIP should insert an MTEXT at the given point.
+    let r = s.execute("pasteclip", &json!({ "at": [1, 2] })).unwrap();
+    assert_eq!(r["handles"].as_array().map(Vec::len), Some(1));
+}

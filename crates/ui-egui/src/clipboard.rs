@@ -54,7 +54,9 @@ pub fn shortcut_commands(app: &mut CadApp, ctx: &egui::Context) -> Vec<&'static 
             egui::Event::Cut => out.push("cutclip"),
             egui::Event::Paste(text) => {
                 let h = hash(&text);
-                if ctx.data(|d| d.get_temp::<u64>(text_id())) != Some(h) && clipboard::load_system_text(&mut app.session, &text) {
+                if ctx.data(|d| d.get_temp::<u64>(text_id())) != Some(h)
+                    && (clipboard::load_system_text(&mut app.session, &text) || clipboard::load_plain_mtext(&mut app.session, &text))
+                {
                     ctx.data_mut(|d| d.insert_temp(text_id(), h));
                 }
                 out.push(if shift { "pasteblock" } else { "pasteclip" });
