@@ -27,6 +27,9 @@ mod spacemouse;
 mod system_animations;
 mod workspace;
 
+#[cfg(target_os = "macos")]
+mod system_pasteboard;
+
 use draftcraft_engine::Session;
 use draftcraft_ui_egui::switch::Switch;
 use draftcraft_ui_egui::{CadApp, Services, i18n};
@@ -350,6 +353,8 @@ fn main() -> eframe::Result {
         }
     }
     install_io();
+    #[cfg(target_os = "macos")]
+    system_pasteboard::install();
     draftcraft_engine::settings_dir::set(vars.config_dir.clone());
     if let Some(dir) = &vars.config_dir {
         draftcraft_ui_egui::fault::install_report_hook(dir.join(draftcraft_ui_egui::fault::REPORT_DIR));

@@ -9,12 +9,16 @@
 //!
 //! The clipboard can also travel as DXF text ([`system_text`], [`load_system_text`]), so a front
 //! end can put it on the system clipboard and paste it into another DraftCraft window.
+//!
+//! Additionally, hosts may install a reader for the system clipboard (DWG/DXF payloads or plain
+//! text) via [`set_system_paste`]. When present, paste commands call [`prepare_system_paste`] to
+//! load a foreign offer into the session clipboard before pasting.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use draftcraft_doc::{Block, Drawing, Entity, EntityKind, HVal, Handle};
-use draftcraft_geom::{Mat3, Vec2};
+use draftcraft_doc::{Block, Drawing, Entity, EntityKind, HVal, Handle, MText};
+use draftcraft_geom::{Mat3, Vec2, Vec3};
 
 use super::{bad, has_doc};
 use crate::{Result, Session};
@@ -51,10 +55,11 @@ fn set(s: &mut Session, ents: Vec<Entity>, base: Vec2, defs: Drawing, uid: Optio
     s.clipboard_source = Some(ClipSource { uid, defs: Arc::new(defs), serial });
 }
 
-/// Enabled check of PASTECLIP and PASTEBLOCK: something to paste.
+/// Enabled check of PASTECLIP and PASTEBLOCK: something to paste (session clipboard not empty)
+/// or a foreign offer available on the system clipboard through the host hook.
 pub(crate) fn has_clip(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
-    if s.clipboard.is_empty() { Err("the clipboard is empty".into()) } else { Ok(()) }
+    if s.clipboard.is_empty() && !system_paste_available() { Err("the clipboard is empty".into()) } else { Ok(()) }
 }
 
 /// Enabled check of PASTEORIG: as in AutoCAD, it pastes objects copied from another drawing.
@@ -85,6 +90,7 @@ pub(crate) fn paste(s: &mut Session, m: &Mat3) -> Result<Vec<Handle>> {
         let mut e = adopt(d, e, &renames);
         e.kind.transform(m);
         d.ensure_layer(&e.common.layer);
+        add_scales(d, &e);
         out.push(e.handle);
         if let Some(st) = d.space_mut(&space) {
             st.push(e);
@@ -115,6 +121,7 @@ pub(crate) fn paste_block(s: &mut Session, at: Vec2) -> Result<Handle> {
     for e in &ents {
         let e = adopt(d, e, &renames);
         d.ensure_layer(&e.common.layer);
+        add_scales(d, &e);
         b.entities.push(e);
     }
     d.blocks.insert(name.clone(), Arc::new(b));
@@ -158,13 +165,125 @@ pub fn load_system_text(s: &mut Session, text: &str) -> bool {
     }
     let Some(hooks) = super::file::io() else { return false };
     let Ok(src) = (hooks.read)(text.as_bytes(), "clipboard.dxf") else { return false };
-    if src.model.is_empty() || src.model.len() > MAX_SYSTEM_OBJECTS {
+    take_from_drawing(s, src)
+}
+
+/// A foreign offer on the system clipboard that the desktop host found and reports.
+#[derive(Clone, Debug)]
+pub enum SystemPaste {
+    /// A DWG or DXF payload; `name` is `clipboard.dwg` or `clipboard.dxf`.
+    Drawing { bytes: Vec<u8>, name: String },
+    /// Plain text, or RTF already reduced to visible text.
+    Text(String),
+}
+
+static SYSTEM_PASTE: OnceLock<fn() -> Option<SystemPaste>> = OnceLock::new();
+
+/// Install the host's system-clipboard reader (e.g. macOS pasteboard). A second call is ignored.
+pub fn set_system_paste(f: fn() -> Option<SystemPaste>) {
+    let _ = SYSTEM_PASTE.set(f);
+}
+
+/// Whether the host currently sees a drawing or text on the system clipboard.
+pub fn system_paste_available() -> bool {
+    SYSTEM_PASTE.get().and_then(|f| f()).is_some()
+}
+
+fn same_text(a: &str, b: &str) -> bool {
+    a.replace("\r\n", "\n") == b.replace("\r\n", "\n")
+}
+
+/// Load a foreign drawing or text from the system clipboard into the session clipboard, when it
+/// is not the copy we last put there ourselves. Returns true when something was loaded.
+pub fn prepare_system_paste(s: &mut Session) -> bool {
+    let Some(f) = SYSTEM_PASTE.get() else { return false };
+    let ours = s.clipboard_source.as_ref().is_some_and(|c| c.uid.is_some()) && !s.clipboard.is_empty();
+    // Prefer the in-app clipboard when it already holds a copy from this drawing.
+    if ours {
         return false;
     }
-    let ents: Vec<Entity> = src.model.iter().map(|e| (**e).clone()).collect();
+    let Some(offer) = f() else { return false };
+    let our_text = if ours { system_text(s) } else { None };
+    match offer {
+        SystemPaste::Drawing { bytes, name } => load_system_bytes(s, &bytes, &name),
+        SystemPaste::Text(text) => {
+            if let Some(t) = &our_text
+                && same_text(t, &text)
+            {
+                return false;
+            }
+            if load_system_text(s, &text) { true } else { load_plain_mtext(s, &text) }
+        }
+    }
+}
+
+/// Make a DWG or DXF payload (from the system clipboard) the session clipboard: model-space
+/// objects, or the first paper space with any, with the base point from `$INSBASE`.
+pub fn load_system_bytes(s: &mut Session, bytes: &[u8], name: &str) -> bool {
+    if bytes.is_empty() || bytes.len() > 256 << 20 {
+        return false;
+    }
+    let Some(hooks) = super::file::io() else { return false };
+    let Ok(src) = (hooks.read)(bytes, name) else { return false };
+    take_from_drawing(s, src)
+}
+
+fn paste_entities(src: &Drawing) -> Vec<Entity> {
+    if !src.model.is_empty() {
+        return src.model.iter().map(|e| (**e).clone()).collect();
+    }
+    for layout in &src.layouts {
+        if !layout.entities.is_empty() {
+            return layout.entities.iter().map(|e| (**e).clone()).collect();
+        }
+    }
+    Vec::new()
+}
+
+fn take_from_drawing(s: &mut Session, src: Drawing) -> bool {
+    let ents = paste_entities(&src);
+    if ents.is_empty() || ents.len() > MAX_SYSTEM_OBJECTS {
+        return false;
+    }
     let base = src.header.point("INSBASE").map(|p| p.xy()).filter(|p| p.is_finite()).unwrap_or(Vec2::ZERO);
     let defs = defs_for(&src, &ents);
     set(s, ents, base, defs, None);
+    true
+}
+
+/// Put `text` on the clipboard as a single MTEXT (plain text, or RTF already reduced to words).
+/// Newlines become `\P`; braces and backslashes are escaped. Height 2.5 in current units.
+pub fn load_plain_mtext(s: &mut Session, text: &str) -> bool {
+    let contents = text.replace('\r', "");
+    if contents.trim().is_empty() || contents.len() > 256 << 20 {
+        return false;
+    }
+    let mut escaped = String::new();
+    for c in contents.chars() {
+        match c {
+            '\\' => escaped.push_str("\\\\"),
+            '{' => escaped.push_str("\\{"),
+            '}' => escaped.push_str("\\}"),
+            '\n' => escaped.push_str("\\P"),
+            c => escaped.push(c),
+        }
+    }
+    let mut d = Drawing::new_imperial();
+    let m = MText {
+        insert: Vec3::ZERO,
+        height: 2.5,
+        width: 0.0,
+        attach: 1,
+        rotation: 0.0,
+        style: "Standard".into(),
+        contents: escaped,
+        line_spacing: 1.0,
+        line_spacing_exact: false,
+        columns: None,
+    };
+    let ents = vec![Entity::new(d.new_handle(), EntityKind::MText(m))];
+    let defs = defs_for(&d, &ents);
+    set(s, ents, Vec2::ZERO, defs, None);
     true
 }
 
@@ -300,6 +419,16 @@ fn merge(d: &mut Drawing, defs: &Drawing) -> BTreeMap<String, String> {
         d.blocks.insert(to.clone(), Arc::new(nb));
     }
     renames
+}
+
+/// As AutoCAD does when pasting annotative objects: the annotation scales `e` supports join the
+/// drawing's scale list when it has no scale of that name.
+fn add_scales(d: &mut Drawing, e: &Entity) {
+    for sc in &e.common.anno_scales {
+        if sc.is_valid() && d.anno_scale(&sc.name).is_none() && d.scales.len() < draftcraft_doc::MAX_SCALES {
+            d.scales.push(sc.clone());
+        }
+    }
 }
 
 /// A copy of a clipboard object for `d`: a fresh handle, block references renamed, and links to

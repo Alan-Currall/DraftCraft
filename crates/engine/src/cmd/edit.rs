@@ -520,6 +520,7 @@ fn paste(s: &mut Session, offset: Vec2) -> Result<Vec<Handle>> {
 }
 
 fn run_paste(s: &mut Session, p: &Value) -> Result<Value> {
+    clipboard::prepare_system_paste(s);
     if s.clipboard.is_empty() {
         return Err(bad("pasteclip", "the clipboard is empty"));
     }
@@ -532,6 +533,7 @@ fn run_paste(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn run_pasteblock(s: &mut Session, p: &Value) -> Result<Value> {
+    clipboard::prepare_system_paste(s);
     let at = point_param(p, "at").unwrap_or(s.clipboard_base);
     let h = clipboard::paste_block(s, at)?;
     let block = match s.doc()?.entity(h).map(|e| &e.kind) {
@@ -542,6 +544,7 @@ fn run_pasteblock(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn run_pasteorig(s: &mut Session, _p: &Value) -> Result<Value> {
+    clipboard::prepare_system_paste(s);
     let r = paste(s, Vec2::ZERO)?;
     Ok(json!({ "handles": r.iter().map(|h| h.hex()).collect::<Vec<_>>() }))
 }
