@@ -27,6 +27,8 @@ const HEADER_VARS: &[(&str, i32)] = &[
     ("DIMSTYLE", 2),
     ("LUNITS", 70),
     ("LUPREC", 70),
+    // Current entity transparency: DXF group 440 transparency word.
+    ("CETRANSPARENCY", 440),
     ("AUNITS", 70),
     ("AUPREC", 70),
     ("ELEVATION", 40),
@@ -125,7 +127,7 @@ pub(super) fn header_vars(w: &mut W, d: &Drawing) {
                     w.f(c, f);
                 }
             }
-            (c @ (62 | 70 | 280 | 290 | 370), v) => {
+            (c @ (62 | 70 | 280 | 290 | 370 | 440), v) => {
                 if let Some(i) = v.as_i64() {
                     w.s(9, format!("${name}"));
                     w.i(c, i);
