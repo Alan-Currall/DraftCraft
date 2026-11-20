@@ -29,6 +29,8 @@ use crate::{Result, Session};
 const MAX_PATH: usize = 4096;
 /// The resolution underlays are rendered at (dots per inch of the page), at most.
 pub const UNDERLAY_DPI: f64 = 150.0;
+/// Upper cap for dynamic underlay re-rendering (PDF reader clamps pixels-per-point to 8).
+pub const UNDERLAY_MAX_DPI: f64 = 576.0;
 /// Most underlay pages rendered per drawing.
 const MAX_PAGES_LOADED: usize = 200;
 
@@ -48,6 +50,10 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         CommandSpec::new("ulayers", "Underlay Layers", run_ulayers)
             .params("{} → {underlays: [{handle, name, path, page, status: Loaded|Not Found|Not loaded}]}")
+            .noundo(),
+        // Internal: refresh underlay rasters for a target zoom. Not shown in menus.
+        CommandSpec::new("pdfunderlay.refresh", "Refresh PDF underlay rasters", run_refresh)
+            .params("{pxPerUnit: device pixels per drawing unit (>= 0), space?: \"Model\" | layout name} → {refreshed: number, dpi: number}")
             .noundo(),
     ]
 }
@@ -289,6 +295,93 @@ fn run_ulayers(s: &mut Session, _p: &Value) -> Result<Value> {
         })
         .collect();
     Ok(json!({ "underlays": rows }))
+}
+
+/// Quantise a desired dpi to a small set of useful values, capped to the reader's limits.
+fn quantised_dpi(dpi: f64) -> f64 {
+    if !dpi.is_finite() || dpi <= 0.0 {
+        return UNDERLAY_DPI;
+    }
+    let capped = dpi.min(UNDERLAY_MAX_DPI);
+    // Prefer familiar steps and avoid re-render churn on tiny zoom changes.
+    let candidates = [96.0, 120.0, 150.0, 200.0, 240.0, 300.0, 360.0, 450.0, 576.0];
+    *candidates
+        .iter()
+        .min_by(|a, b| (a - &capped).abs().total_cmp(&(b - &capped).abs()))
+        .unwrap_or(&UNDERLAY_DPI)
+}
+
+/// Refresh underlay rasters to suit a target on-screen zoom (pxPerUnit device pixels per drawing unit).
+/// Keeps existing rasters when they are already sharp enough; upgrades to a higher resolution when needed.
+fn run_refresh(s: &mut Session, p: &Value) -> Result<Value> {
+    let Some(hooks) = pdf_hooks() else { return Ok(json!({ "refreshed": 0, "dpi": 0.0 })); };
+    let px_per_unit = f64_or(p, "pxPerUnit", 0.0).max(0.0);
+    // When px_per_unit is zero (no canvas yet), do nothing.
+    if px_per_unit == 0.0 || !px_per_unit.is_finite() {
+        return Ok(json!({ "refreshed": 0, "dpi": 0.0 }));
+    }
+    // Which space to consider: default the current one, else explicit.
+    let space: Space = match str_param(p, "space") {
+        None => s.space(),
+        Some("Model") => Space::Model,
+        Some(name) => Space::Paper(name.to_string()),
+    };
+    // Desired dpi at this zoom: px/unit × units/inch.
+    let d = s.doc()?;
+    let want_dpi = quantised_dpi(px_per_unit * units_per_inch(d));
+    let host = s.state()?.path.clone();
+    // Collect unique (path, page, raster_key) for the chosen space only to keep work bounded.
+    let store = d.space(&space).ok_or_else(|| bad("pdfunderlay.refresh", "no current space"))?;
+    let mut wanted: Vec<(String, usize, String, f64)> = Vec::new();
+    for e in store.iter() {
+        let EntityKind::Image(img) = &e.kind else { continue };
+        let Some(u) = &img.underlay else { continue };
+        let Some(page) = u.page_index() else { continue };
+        // Skip when the page size is not yet known: we can't decide sharpness without it.
+        if !(img.size.x.is_finite() && img.size.x > 0.0) {
+            continue;
+        }
+        let key = img.raster_key();
+        if wanted.iter().any(|(_, _, k, _)| *k == key) {
+            continue;
+        }
+        // Required pixel width at this dpi.
+        let want_px_w = (img.size.x / POINTS_PER_INCH) * want_dpi;
+        wanted.push((img.path.clone(), page, key, want_px_w));
+    }
+    if wanted.is_empty() {
+        return Ok(json!({ "refreshed": 0, "dpi": want_dpi }));
+    }
+    // Prepare a copy to update rasters without marking the drawing as changed.
+    let mut rasters = d.rasters.clone();
+    let mut refreshed = 0usize;
+    for (path, page, key, want_px_w) in &wanted {
+        // If we already have pixels sharp enough (with a little hysteresis), keep them.
+        match rasters.get(key) {
+            Some(r) if f64::from(r.width()) >= *want_px_w * 0.9 => continue,
+            _ => {}
+        }
+        // Load file bytes and (re)render at the desired dpi.
+        let bytes = match super::image::read_file(path, host.as_deref()) {
+            Ok(b) => b,
+            Err(_) => continue, // silently skip: ULAYERS reports missing files
+        };
+        if let Ok(r) = (hooks.rasterize)(&bytes, *page, want_dpi) {
+            rasters.insert(key, Arc::new(r));
+            refreshed = refreshed.saturating_add(1);
+        }
+    }
+    if refreshed > 0 {
+        // Swapping rasters is not a change to the drawing (as in `after_open`).
+        if let Some(st) = s.docs.get_mut(s.current) {
+            let unchanged = Arc::ptr_eq(&st.doc, &st.saved);
+            Arc::make_mut(&mut st.doc).rasters = rasters;
+            if unchanged {
+                st.saved = st.doc.clone();
+            }
+        }
+    }
+    Ok(json!({ "refreshed": refreshed, "dpi": want_dpi }))
 }
 
 const IMPORT: &str = "pdfimport";
