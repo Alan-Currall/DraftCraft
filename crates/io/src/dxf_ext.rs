@@ -933,6 +933,21 @@ mod tests {
     }
 
     #[test]
+    fn dstyle_marker_allows_trailing_nul() {
+        // Build minimal ACAD xdata with a DSTYLE list whose name ends with a NUL.
+        let tags = vec![
+            draftcraft_dxf::Tag::s(1001, "ACAD"),
+            draftcraft_dxf::Tag::s(1000, "DSTYLE\0"),
+            draftcraft_dxf::Tag::s(1002, "{"),
+            draftcraft_dxf::Tag::i(1070, 271), // decimals
+            draftcraft_dxf::Tag::i(1070, 1),   // value
+            draftcraft_dxf::Tag::s(1002, "}"),
+        ];
+        let overrides = read_dstyle(&tags, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        assert_eq!(overrides.get("decimals"), Some(&serde_json::json!(1)));
+    }
+
+    #[test]
     fn arrow_names() {
         assert_eq!(arrow_block_name("_DOT").map(|x| x.0).as_deref(), Some("_DOT"));
         assert_eq!(arrow_block_name("Architectural tick").map(|x| x.0).as_deref(), Some("_ArchTick"));
