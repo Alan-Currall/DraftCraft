@@ -59,6 +59,12 @@ const HEADER: &[(&str, Kind, Def)] = &[
     ("HPDLGMODE", Kind::Choice(&[0, 1]), Def::Int(1)),
     ("HPNAME", Kind::Pattern, Def::Str("ANSI31")),
     ("HPSCALE", Kind::Real { min: 0.0, strict: true }, Def::Real(1.0)),
+    // Current transparency for new objects: -1 ByLayer, -2 ByBlock, 0..90 percent.
+    ("CETRANSPARENCY", Kind::Int(-2, 90), Def::Int(-1)),
+    // New hatches annotative when 1 (HPANNOTATIVE).
+    ("HPANNOTATIVE", Kind::Choice(&[0, 1]), Def::Int(0)),
+    // Hatch background ACI (0..256) or -1 (none).
+    ("HPBACKGROUNDCOLOR", Kind::Int(-1, 256), Def::Int(-1)),
     ("INSNAME", Kind::Name, Def::Str("")),
     ("LWDEFAULT", Kind::Choice(&LINEWEIGHTS), Def::Int(25)),
     // Negative: Through (OFFSET picks a point).

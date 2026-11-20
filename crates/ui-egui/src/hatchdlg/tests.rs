@@ -306,19 +306,13 @@ fn a_failed_ok_keeps_the_dialog_open_with_the_error() {
 #[test]
 fn typed_and_menu_hatch_open_the_dialog_but_dash_and_json_do_not() {
     let (mut app, _) = app_with_rect();
+    // Plain HATCH now starts picking (Hatch Creation bar visible), not the dialog.
     app.cmdline("hatch");
-    assert_eq!(app.ui.dialog.as_deref(), Some("hatch"));
-    assert!(app.session.running.is_none());
-    assert!(!app.hatch_dlg.clone().unwrap().fill.gradient);
-    for (typed, gradient) in [("h", false), ("bh", false), ("gradient", true), ("gd", true)] {
-        app.ui.dialog = None;
-        app.cmdline(typed);
-        assert_eq!(app.ui.dialog.as_deref(), Some("hatch"), "{typed}");
-        assert_eq!(app.hatch_dlg.clone().unwrap().fill.gradient, gradient, "{typed}");
-    }
-    app.ui.dialog = None;
+    assert!(crate::hatchbar::shown(&app));
+    assert!(app.session.running.is_some());
+    // Menu HATCH starts picking too.
     app.start("hatch");
-    assert_eq!(app.ui.dialog.as_deref(), Some("hatch"), "menu");
+    assert!(crate::hatchbar::shown(&app), "menu");
     // -HATCH: the command line.
     app.ui.dialog = None;
     app.cmdline("-hatch");
@@ -330,11 +324,7 @@ fn typed_and_menu_hatch_open_the_dialog_but_dash_and_json_do_not() {
     assert_eq!(app.ui.dialog, None);
     app.cmdline("hatch {\"points\": [[5, 5]]}");
     assert_eq!(app.ui.dialog, None);
-    // HPDLGMODE 0: the command line.
-    app.run("setvar", json!({ "name": "HPDLGMODE", "value": 0 })).unwrap();
-    app.cmdline("hatch");
-    assert_eq!(app.ui.dialog, None);
-    assert!(app.session.running.is_some());
+    // The dialog is still reachable from the bar's link (covered by hatchbar tests).
 }
 
 #[test]

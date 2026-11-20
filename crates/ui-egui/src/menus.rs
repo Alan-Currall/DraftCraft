@@ -603,12 +603,11 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
             app.ui.dialog = Some("dsettings".into());
             Ok(Value::Null)
         }
-        // Typed or from a menu (no parameters): the Hatch and Gradient dialog (HPDLGMODE 1) and the
-        // Hatch Edit dialog. -HATCH, -HATCHEDIT and JSON calls keep the command line and the JSON form.
-        "hatch" | "h" | "bh" | "gradient" | "gd" if params.is_null() && crate::hatchdlg::dialog_on(app) => {
-            crate::hatchdlg::open_create(app, matches!(id, "gradient" | "gd"));
-            Ok(Value::Null)
-        }
+        // Plain HATCH/GRADIENT (typed or from menu) now start interactive picking by default so the
+        // contextual Hatch Creation bar is shown immediately. The full dialog remains reachable
+        // from the bar's link. JSON calls keep the JSON form; -HATCH/-GRADIENT stay command-line.
+        // No early return here: let the engine start the interactive command.
+        "hatch" | "h" | "bh" | "gradient" | "gd" if params.is_null() => return None,
         // Typed or from the Tools menu: the Command Aliases dialog. JSON calls keep the JSON form.
         "aliasedit" if params.is_null() => {
             crate::aliasdlg::open(app);

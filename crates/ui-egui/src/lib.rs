@@ -37,6 +37,7 @@ pub mod docking;
 pub mod fault;
 // The Find and Replace window behind the FIND command.
 pub mod finddlg;
+pub mod hatchbar;
 pub mod hatchdlg;
 mod mtext_editor;
 mod panel_state;
@@ -987,6 +988,9 @@ impl CadApp {
                 chrome::start_page(self, ui);
             }
         });
+        // Hatch Creation bar: a compact overlay shown while HATCH/GRADIENT are picking boundaries.
+        // It drives HP* vars so the interactive preview updates and the created hatch uses them.
+        hatchbar::show(self, ui.ctx(), ui.max_rect());
         self.opening.show(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         updates_ui::show(self, ui.ctx());
