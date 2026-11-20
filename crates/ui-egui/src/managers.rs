@@ -197,6 +197,32 @@ fn linetype(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                 action = Some(("ltscale", json!({ "scale": v })));
             }
         });
+        // Style Override: set header DIM* variables (SETVAR) for the current style
+        ui.separator();
+        if ui
+            .button("Override (apply as DIM* variables)")
+            .on_hover_text("Apply the chosen fields as style overrides (SETVAR DIM*) for new dimensions")
+            .clicked()
+        {
+            if let Some(base) = d.dim_style(&sel).cloned() {
+                let a = serde_json::to_value(&base).unwrap_or(json!({}));
+                let b = serde_json::to_value(&cur).unwrap_or(json!({}));
+                if let (Some(ao), Some(bo)) = (a.as_object(), b.as_object()) {
+                    for (k, vb) in bo {
+                        if k == "name" {
+                            continue;
+                        }
+                        if let Some(va) = ao.get(k)
+                            && va != vb
+                            && let Some(var) = dim_field_to_var(k)
+                        {
+                            let _ = app.run("setvar", json!({ "name": var, "value": vb.clone() }));
+                        }
+                    }
+                    app.session.echo("Dimension overrides set; future dimensions use them until the style is made current again.");
+                }
+            }
+        }
     });
     set_temp(ctx, "ltmgr_sel", sel);
     action
