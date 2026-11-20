@@ -9,6 +9,8 @@ use crate::CadApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
+/// Blocks palette.
+pub mod blocks;
 /// DesignCenter (ADCENTER).
 pub mod designcenter;
 #[cfg(test)]
@@ -27,6 +29,7 @@ pub mod toolpalettes;
 pub struct SidePalettes {
     pub design_center: designcenter::State,
     pub tool_palettes: toolpalettes::State,
+    pub blocks: blocks::State,
     pub sheet_set: sheetset::State,
 }
 
@@ -37,6 +40,8 @@ pub fn route(app: &mut CadApp, id: &str, params: &Value) -> Option<Result<Value,
     use crate::docking::{Panel, command};
     let close = |app: &mut CadApp, panel: Panel| command(app, false, &json!({ "operation": "close", "panel": panel.id() }));
     match id {
+        "ui.panel.blocks" if params.is_null() => Some(blocks::open(app)),
+        "blockspalette" | "blocks.palette" if params.is_null() => Some(blocks::open(app)),
         "ui.toolpalettes" => Some(app.side_palettes.tool_palettes.command(params)),
         "toolpalettes" | "tp" if params.is_null() => Some(toolpalettes::open(app)),
         "toolpalettesclose" => Some(close(app, Panel::ToolPalettes)),

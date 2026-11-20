@@ -599,6 +599,17 @@
 	Raster Images	光栅图像
 	Ray	射线
 	Read-only	只读
+	Current Drawing	当前图形
+	Libraries	库
+	Filter blocks	筛选块
+	No drawing open.	没有打开的图形。
+	No recent blocks.	没有最近的块。
+	Open a drawing to see its blocks.	打开一个图形以查看其块。
+	Insertion point	插入点
+	Specify on screen	在屏幕上指定
+	Uniform	等比
+	Repeat Placement	重复放置
+	Blocks Palette	块面板
 	Real name	真实姓名
 	Realtime	实时
 	Reassociate Dimensions	重新关联标注
