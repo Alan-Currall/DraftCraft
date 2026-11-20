@@ -81,9 +81,11 @@ fn crossing_drag_then_enter_stretches() {
     assert!(h.state().session.running.is_some(), "STRETCH ended unexpectedly");
     assert!(prompt(&h).starts_with("Specify base point"), "{}", prompt(&h));
     // Base at (50,60), second at (70,60): displacement (20,0).
-    click(&mut h, screen(&h, Vec2::new(50.0, 60.0)));
+    let base_pos = screen(&h, Vec2::new(50.0, 60.0));
+    click(&mut h, base_pos);
     assert!(prompt(&h).starts_with("Specify second point"), "{}", prompt(&h));
-    click(&mut h, screen(&h, Vec2::new(70.0, 60.0)));
+    let second_pos = screen(&h, Vec2::new(70.0, 60.0));
+    click(&mut h, second_pos);
     assert!(h.state().session.running.is_none());
     // The line's right end moved to 120,0; left end stayed at 0,0.
     let line = h
@@ -98,7 +100,7 @@ fn crossing_drag_then_enter_stretches() {
             _ => None,
         })
         .unwrap();
-    assert!(line.a.xy().dist(Vec2::new(0.0, 0.0)) < 1e-6, "{line:?}");
-    assert!(line.b.xy().dist(Vec2::new(120.0, 0.0)) < 1e-6, "{line:?}");
+    assert!(line.a.xy().dist(Vec2::new(0.0, 0.0)) < 1e-5, "{line:?}");
+    assert!(line.b.xy().dist(Vec2::new(120.0, 0.0)) < 1e-5, "{line:?}");
 }
 

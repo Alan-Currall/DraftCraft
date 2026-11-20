@@ -9,7 +9,11 @@ impl Session {
     /// command running, or a command asking for objects. Returns whether a window was opened.
     pub fn begin_window(&mut self, corner: Vec2) -> bool {
         let during_command = self.running.is_some();
-        if !self.settings.pickdrag || !corner.is_finite() || (during_command && !self.current_prompt().is_some_and(|p| p.accept.select)) {
+        // Allow press-and-drag selection windows during STRETCH even though its prompt accepts
+        // points (it owns its window prompts), to feed its crossing/window selection properly.
+        let stretch_ok = self.running.as_ref().is_some_and(|r| r.id == "stretch");
+        let can_select = self.current_prompt().is_some_and(|p| p.accept.select) || stretch_ok;
+        if !self.settings.pickdrag || !corner.is_finite() || (during_command && !can_select) {
             return false;
         }
         self.pending_window = Some(PendingWindow { corner, during_command });

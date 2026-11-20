@@ -983,11 +983,17 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     }
     if app.canvas.drag_window && resp.drag_stopped_by(egui::PointerButton::Primary) {
         app.canvas.drag_window = false;
-        if app.session.pending_window.is_some()
+        if let Some(pw) = app.session.pending_window
             && let Some(end) = ui.input(|i| i.pointer.interact_pos())
         {
             let end = xf.to_world(end);
-            let done = if app.session.prompting() { app.session.input(Input::Point(end)) } else { app.session.idle_click(end, mods.shift) };
+            let done = if app.session.prompting() {
+                // Feed both corners to commands that own their window prompts (e.g. STRETCH).
+                let _ = app.session.input(Input::Point(pw.corner));
+                app.session.input(Input::Point(end))
+            } else {
+                app.session.idle_click(end, mods.shift)
+            };
             if let Err(e) = done {
                 app.session.echo(e.to_string());
             }
