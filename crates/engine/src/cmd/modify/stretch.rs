@@ -59,11 +59,29 @@ fn stretch_entity(e: &mut Entity, wins: &[StretchArea], d: Vec2) {
             }
         }
         EntityKind::MLine(m) => m.vertices.iter_mut().for_each(|v| mv(&mut v.p)),
-        EntityKind::Arc(a) => {
-            // Arcs keep their shape: move when the centre is inside.
-            if inside(a.center.xy()) {
-                a.center.x += d.x;
-                a.center.y += d.y;
+        EntityKind::Arc(a) => stretch_arc(a, &inside, d),
+        EntityKind::Leader(l) => l.vertices.iter_mut().for_each(mv),
+        EntityKind::MLeader(ml) => {
+            for l in &mut ml.leaders {
+                for v in l {
+                    mv(v);
+                }
+            }
+            mv(&mut ml.landing);
+            if let Some(t) = &mut ml.text {
+                mv(&mut t.insert);
+            }
+            if let Some(b) = &mut ml.block {
+                mv(&mut b.insert);
+            }
+        }
+        EntityKind::Hatch(h) => {
+            for lp in &mut h.loops {
+                for v in &mut lp.vertices {
+                    if inside(v.p) {
+                        v.p += d;
+                    }
+                }
             }
         }
         EntityKind::Solid(so) | EntityKind::Trace(so) => so.corners.iter_mut().for_each(mv),
@@ -80,6 +98,40 @@ fn stretch_entity(e: &mut Entity, wins: &[StretchArea], d: Vec2) {
             }
         }
     }
+}
+
+/// STRETCH on an arc, as LT does: with both ends inside it moves; with one end inside that end
+/// moves and the arc keeps its height above the chord (its sagitta); otherwise it stays.
+fn stretch_arc(a: &mut draftcraft_doc::Arc, inside: &dyn Fn(Vec2) -> bool, d: Vec2) {
+    let c = a.center.xy();
+    let at = |t: f64| c + Vec2::new(t.cos(), t.sin()) * a.radius;
+    let (s0, e0) = (at(a.start), at(a.end));
+    let (si, ei) = (inside(s0), inside(e0));
+    if si && ei {
+        a.center.x += d.x;
+        a.center.y += d.y;
+        return;
+    }
+    if !si && !ei {
+        return;
+    }
+    let tau = std::f64::consts::TAU;
+    let sweep = (a.end - a.start).rem_euclid(tau);
+    let h = a.radius * (1.0 - (sweep / 2.0).cos());
+    let (s1, e1) = (if si { s0 + d } else { s0 }, if ei { e0 + d } else { e0 });
+    let chord = e1 - s1;
+    let l = chord.len();
+    if l < 1e-12 || h < 1e-12 {
+        return;
+    }
+    let r = (l * l / 4.0 + h * h) / (2.0 * h);
+    let left = Vec2::new(-chord.y, chord.x) / l;
+    let center = (s1 + e1) / 2.0 + left * (r - h);
+    a.center.x = center.x;
+    a.center.y = center.y;
+    a.radius = r;
+    a.start = (s1 - center).y.atan2((s1 - center).x);
+    a.end = (e1 - center).y.atan2((e1 - center).x);
 }
 
 pub(super) fn run_stretch(s: &mut Session, p: &Value) -> Result<Value> {
@@ -320,7 +372,7 @@ impl Interactive for StretchM {
         }
         match (self.phase, self.corner) {
             (StretchPhase::Select, Some(c)) => Prompt::new("Specify opposite corner", Accept::POINT).corner(c),
-            (StretchPhase::Select, None) => Prompt::new(if self.removing { "Remove objects" } else { "Select objects" }, Accept::POINT),
+            (StretchPhase::Select, None) => Prompt::new(if self.removing { "Remove objects" } else { "Select objects" }, Accept::SELECT),
             (StretchPhase::Base, _) => Prompt::new("Specify base point", Accept::POINT).kw(&["Displacement"]).default("Displacement"),
             (StretchPhase::Displacement, _) => Prompt::new("Specify displacement", Accept::POINT).default("0,0"),
             (StretchPhase::Second, _) => Prompt::new("Specify second point or <use first point as displacement>", Accept::POINT).base_opt(self.base),
