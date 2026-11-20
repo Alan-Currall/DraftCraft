@@ -286,11 +286,16 @@ pub fn groups_ui(ui: &mut egui::Ui, groups: &[Vec<Entry>], clicked: &mut Option<
 }
 
 /// Attach the menu to the canvas response: it opens on a right-click, as the object snap menu
-/// when that click held Shift or Ctrl (`CanvasState::snap_menu`).
-pub fn show(app: &mut CadApp, resp: &egui::Response) {
+/// when that click held Shift or Ctrl (`CanvasState::snap_menu`). When `open` is true, open it
+/// now (used to open the snap menu on a middle click when MBUTTONPAN is off).
+pub fn show(app: &mut CadApp, resp: &egui::Response, open: bool) {
     let mut clicked = None;
     let snap = app.canvas.snap_menu;
-    resp.context_menu(|ui| {
+    let mut popup = egui::Popup::context_menu(resp);
+    if open {
+        popup = popup.open_memory(Some(egui::SetOpenCommand::Bool(true)));
+    }
+    popup.show(|ui| {
         let groups = if snap { snap_entries(app) } else { entries(app) };
         groups_ui(ui, &groups, &mut clicked);
     });
