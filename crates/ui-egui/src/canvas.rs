@@ -259,6 +259,7 @@ struct PointerInput {
     scroll: egui::Vec2,
     mods: egui::Modifiers,
     middle_down: bool,
+    pressed_middle: bool,
     pressed_primary: bool,
     pressed_secondary: bool,
     dbl_middle: bool,
@@ -345,6 +346,7 @@ fn handle_button_navigation(app: &mut CadApp, nav: &Navigation<'_>, inside: bool
     let middle_pressed = nav.response.ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Middle));
     let focused = nav.response.ctx.input(|i| i.focused);
     if p.middle_down
+        && app.session.settings.mbuttonpan
         && focused
         && (app.canvas.pan_last.is_some() || (middle_pressed && inside))
         && let Some(at) = p.hover_pos
@@ -849,6 +851,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         scroll: i.smooth_scroll_delta,
         mods: i.modifiers,
         middle_down: i.pointer.middle_down(),
+        pressed_middle: i.pointer.button_clicked(egui::PointerButton::Middle),
         pressed_primary: i.pointer.primary_clicked(),
         pressed_secondary: i.pointer.secondary_clicked(),
         dbl_middle: i.pointer.button_double_clicked(egui::PointerButton::Middle),
@@ -856,7 +859,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     });
     let navigation = Navigation { rect, tiles: &tiles, response: &resp, xf, pointer };
     let Some((inside, on_menu)) = navigate_canvas(app, ui, &navigation) else { return };
-    let PointerInput { hover_pos, mods, middle_down, pressed_primary, pressed_secondary, dbl_primary, .. } = pointer;
+    let PointerInput { hover_pos, mods, middle_down, pressed_middle, pressed_primary, pressed_secondary, dbl_primary, .. } = pointer;
     // Re-read the view after navigation.
     let view = app.session.state().map(|s| s.view()).unwrap_or(view);
     let scale = f64::from(rect.height()) / view.height.max(1e-12);
@@ -1008,10 +1011,16 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         app.canvas.grip_menu = grip_at(app, &xf, hover_pos).filter(|g| !grip_options(app, *g).is_empty());
     }
     crate::dyngrips::menu(app, ui.ctx(), &xf);
-    if idle && !app.canvas.snap_menu && app.canvas.grip_menu.is_some() {
+    // MBUTTONPAN off: a middle click opens the object snap menu at the cursor, instead of panning.
+    let open_snap_from_middle = inside && pressed_middle && !app.session.settings.mbuttonpan;
+    let prev_snap_menu = app.canvas.snap_menu;
+    let want_snap_menu = prev_snap_menu || open_snap_from_middle;
+    if idle && !want_snap_menu && app.canvas.grip_menu.is_some() {
         grip_menu(app, &resp);
-    } else if idle || app.canvas.snap_menu {
-        crate::context_menu::show(app, &resp);
+    } else if idle || want_snap_menu {
+        app.canvas.snap_menu = want_snap_menu;
+        crate::context_menu::show(app, &resp, open_snap_from_middle);
+        app.canvas.snap_menu = prev_snap_menu;
     }
 
     update_hover(app, ui, inside, hover_pos, raw_world, scale);

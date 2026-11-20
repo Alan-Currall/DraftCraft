@@ -22,6 +22,9 @@ pub struct Settings {
     pub gridmajor: u32,
     /// ZOOMFACTOR: how far one mouse wheel step zooms (3..=100).
     pub zoomfactor: u32,
+    /// MBUTTONPAN: the middle mouse button pans (on, the default); off, a middle click opens the
+    /// object snap menu at the cursor instead.
+    pub mbuttonpan: bool,
     /// MEASUREINIT: the units of a new drawing made without a template (NEW, QNEW and the first
     /// drawing at startup): `false` (0, the default) imperial, `true` (1) metric.
     pub measureinit: bool,
@@ -168,6 +171,7 @@ impl Default for Settings {
             cmdecho: true,
             filedia: true,
             pickadd: true,
+            mbuttonpan: true,
             pickdrag: true,
             pickstyle: 1,
             gripsize: 5.0,

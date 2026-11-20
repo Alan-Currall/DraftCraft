@@ -50,6 +50,7 @@ pub const PROFILE_VARS: &[&str] = &[
     "CURSORSIZE",
     "PICKFIRST",
     "PICKADD",
+    "MBUTTONPAN",
     "PICKDRAG",
     "MAXARRAY",
     "MEASUREINIT",

@@ -571,6 +571,11 @@ fn preferences(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>
         changes.insert("timeSensitiveRightClick".into(), json!(timed));
     }
     hint(ui, crate::tl!("Turned off, a right-click while a command runs always opens the shortcut menu."));
+    ui.add_space(6.0);
+    let mut mbuttonpan = app.session.settings.mbuttonpan;
+    if ui.checkbox(&mut mbuttonpan, crate::tl!("Middle button pans")).changed() {
+        changes.insert("MBUTTONPAN".into(), json!(i32::from(mbuttonpan)));
+    }
 }
 
 fn profiles(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) {

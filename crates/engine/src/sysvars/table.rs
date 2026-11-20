@@ -86,6 +86,7 @@ type Toggle = (&'static str, fn(&Settings) -> bool, fn(&mut Settings, bool));
 const SETTINGS: &[Toggle] = &[
     ("AUDITCTL", |s| s.auditctl, |s, v| s.auditctl = v),
     ("ATTREQ", |s| s.attreq, |s, v| s.attreq = v),
+    ("MBUTTONPAN", |s| s.mbuttonpan, |s, v| s.mbuttonpan = v),
     ("TRANSPARENCYDISPLAY", |s| s.transparency_display, |s, v| s.transparency_display = v),
 ];
 
