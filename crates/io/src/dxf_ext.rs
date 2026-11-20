@@ -352,7 +352,13 @@ pub(crate) fn xdata<'a>(tags: &'a [Tag], app: &str) -> &'a [Tag] {
 
 /// The groups inside `1000 <name>` `1002 {` … `1002 }` of an xdata run (nested braces kept).
 pub(crate) fn xdata_list<'a>(x: &'a [Tag], name: &str) -> &'a [Tag] {
-    let Some(at) = x.iter().position(|t| t.code == 1000 && t.str().trim().eq_ignore_ascii_case(name)) else { return &[] };
+    // Some writers end the list name with a NUL (e.g. "DSTYLE\0"); treat it as the same name.
+    let Some(at) = x
+        .iter()
+        .position(|t| t.code == 1000 && t.str().trim_matches(|c: char| c.is_whitespace() || c == '\0').eq_ignore_ascii_case(name))
+    else {
+        return &[];
+    };
     let Some(open) = x.get(at + 1).filter(|t| t.code == 1002 && t.str().trim() == "{") else { return &[] };
     let _ = open;
     let body = x.get(at + 2..).unwrap_or(&[]);
