@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui::{RichText, Sense, Stroke, vec2};
 use serde_json::{Value, json};
+use draftcraft_color::Color as DcColor;
 
 use crate::CadApp;
 use crate::parametric::expr_field;
@@ -197,32 +198,6 @@ fn linetype(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                 action = Some(("ltscale", json!({ "scale": v })));
             }
         });
-        // Style Override: set header DIM* variables (SETVAR) for the current style
-        ui.separator();
-        if ui
-            .button("Override (apply as DIM* variables)")
-            .on_hover_text("Apply the chosen fields as style overrides (SETVAR DIM*) for new dimensions")
-            .clicked()
-        {
-            if let Some(base) = d.dim_style(&sel).cloned() {
-                let a = serde_json::to_value(&base).unwrap_or(json!({}));
-                let b = serde_json::to_value(&cur).unwrap_or(json!({}));
-                if let (Some(ao), Some(bo)) = (a.as_object(), b.as_object()) {
-                    for (k, vb) in bo {
-                        if k == "name" {
-                            continue;
-                        }
-                        if let Some(va) = ao.get(k)
-                            && va != vb
-                            && let Some(var) = dim_field_to_var(k)
-                        {
-                            let _ = app.run("setvar", json!({ "name": var, "value": vb.clone() }));
-                        }
-                    }
-                    app.session.echo("Dimension overrides set; future dimensions use them until the style is made current again.");
-                }
-            }
-        }
     });
     set_temp(ctx, "ltmgr_sel", sel);
     action
@@ -352,6 +327,51 @@ struct Style {
     fields: Vec<Field>,
 }
 
+#[derive(Clone)]
+enum EditKind {
+    New(String),
+    Modify(String),
+    Override(String),
+}
+
+#[derive(Clone)]
+struct DimEdit {
+    kind: EditKind,
+    working: draftcraft_doc::DimStyle,
+    tab: usize,
+}
+
+/// Commit a style edit (Modify/New) by sending the staged fields through the `dimstyle` command.
+pub fn commit_style_edit(app: &mut CadApp, working: &draftcraft_doc::DimStyle) {
+    let v = serde_json::to_value(working).unwrap_or(json!({}));
+    if let Some(mut o) = v.as_object().cloned() {
+        o.remove("name");
+        let mut body = o;
+        body.insert("name".into(), json!(working.name.clone()));
+        body.insert("current".into(), json!(false));
+        let _ = app.run("dimstyle", serde_json::Value::Object(body));
+    }
+}
+
+/// Commit an Override edit: compare original and staged and SETVAR changed DIM* variables.
+pub fn commit_override_edit(app: &mut CadApp, original: &draftcraft_doc::DimStyle, working: &draftcraft_doc::DimStyle) {
+    let a = serde_json::to_value(original).unwrap_or(json!({}));
+    let b = serde_json::to_value(working).unwrap_or(json!({}));
+    if let (Some(ao), Some(bo)) = (a.as_object(), b.as_object()) {
+        for (k, vb) in bo {
+            if k == "name" {
+                continue;
+            }
+            if let Some(va) = ao.get(k)
+                && va != vb
+                && let Some(var) = dim_field_to_var(k)
+            {
+                let _ = app.run("setvar", json!({ "name": var, "value": vb.clone() }));
+            }
+        }
+    }
+}
+
 // ---------- Dimension Style ----------
 
 /// Built-in arrowhead names the renderer accepts (DIMBLK/DIMBLK1/2 and DIMLDRBLK).
@@ -380,6 +400,91 @@ fn arrow_choices() -> Vec<&'static str> {
     ]
 }
 
+/// Reverse map: style field name → DIM* variable.
+fn dim_field_to_var(field: &str) -> Option<&'static str> {
+    for (var, f) in draftcraft_doc::DIMVARS {
+        if *f == field {
+            return Some(var);
+        }
+    }
+    None
+}
+
+/// Colour picker for ByLayer, ByBlock or ACI index.
+fn color_picker(ui: &mut egui::Ui, label: &str, cur: &DcColor) -> Option<DcColor> {
+    ui.label(label);
+    let mut change: Option<DcColor> = None;
+    let mut kind_index = matches!(cur, DcColor::Index(_));
+    let mut kind_bylayer = matches!(cur, DcColor::ByLayer);
+    let mut kind_byblock = matches!(cur, DcColor::ByBlock);
+    ui.horizontal(|ui| {
+        if ui.radio(kind_bylayer, "ByLayer").clicked() {
+            change = Some(DcColor::ByLayer);
+        }
+        if ui.radio(kind_byblock, "ByBlock").clicked() {
+            change = Some(DcColor::ByBlock);
+        }
+        if ui.radio(kind_index, "Index").clicked() {
+            let aci = match cur {
+                DcColor::Index(i) if *i > 0 && *i <= 255 => *i,
+                _ => 7,
+            };
+            change = Some(DcColor::Index(aci));
+        }
+    });
+    // Number for ACI
+    let mut idx = match change.as_ref().unwrap_or(cur) {
+        DcColor::Index(i) => *i as f64,
+        _ => 7.0,
+    };
+    if ui.add_enabled(matches!(change.as_ref().unwrap_or(cur), DcColor::Index(_)), egui::DragValue::new(&mut idx)).changed() {
+        if !idx.is_finite() {
+            idx = 7.0;
+        }
+        if idx < 1.0 {
+            idx = 1.0;
+        }
+        if idx > 255.0 {
+            idx = 255.0;
+        }
+        change = Some(DcColor::Index((idx.round() as u8)));
+    }
+    change
+}
+
+/// Linetype picker that offers ByLayer and ByBlock plus loaded linetypes; empty string = ByBlock.
+fn linetype_picker(ui: &mut egui::Ui, id: impl egui::AsIdSalt, label: &str, cur: &str, choices: &[String]) -> Option<String> {
+    ui.label(label);
+    let mut pick = None;
+    craft_ui::ComboBox::from_id_salt(id).selected_text(if cur.is_empty() { "(ByBlock)" } else { cur }).show_ui(ui, |ui| {
+        if ui.selectable_label(cur.is_empty(), "(ByBlock)").clicked() {
+            pick = Some(String::new());
+        }
+        if ui.selectable_label(cur.eq_ignore_ascii_case("ByLayer"), "ByLayer").clicked() {
+            pick = Some("ByLayer".into());
+        }
+        for n in choices {
+            if ui.selectable_label(n.eq_ignore_ascii_case(cur), n).clicked() {
+                pick = Some(n.clone());
+            }
+        }
+    });
+    pick
+}
+
+/// DraftCraft lineweight codes offered in UI pickers.
+const LWEIGHTS: &[i64] = &[-1, -2, -3, 0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
+
+fn lweight_name(code: i64) -> String {
+    match code {
+        -1 => "ByLayer".into(),
+        -2 => "ByBlock".into(),
+        -3 => "Default".into(),
+        0 => "0.00 mm".into(),
+        n => format!("{:.2} mm", (n as f64) / 100.0),
+    }
+}
+
 /// Draw a small live preview of the selected dimension style.
 fn dimstyle_preview(ui: &mut egui::Ui, st: &draftcraft_doc::DimStyle) {
     use draftcraft_geom::{Vec2, Vec3};
@@ -392,19 +497,23 @@ fn dimstyle_preview(ui: &mut egui::Ui, st: &draftcraft_doc::DimStyle) {
     // Place the dimension line above
     let defpt = Vec3::new(110.0, 80.0, 0.0);
     let dm = draftcraft_doc::Dimension {
-        style: st.name.clone(),
-        text: "<>".into(),
         kind: draftcraft_doc::DimKind::Linear { rotation: 0.0 },
+        defpt,
+        text_mid: defpt,
         p13,
         p14,
-        defpt,
         p15: Vec3::ZERO,
-        assoc: Vec::new(),
-        overrides: serde_json::Map::new(),
-        text_mid: defpt,
-        user_text_pos: false,
+        p16: Vec3::ZERO,
+        text: "<>".into(),
+        style: st.name.clone(),
+        measurement: 0.0,
         text_rotation: 0.0,
+        user_text_pos: false,
         block: None,
+        insertion_point: Vec3::ZERO,
+        overrides: serde_json::Map::new(),
+        assoc: Vec::new(),
+        marks: Default::default(),
     };
     let k = 1.0; // drawing scale is abstract in this preview
     let g = draftcraft_render::dimension_geometry(&dm, st, k);
@@ -412,12 +521,12 @@ fn dimstyle_preview(ui: &mut egui::Ui, st: &draftcraft_doc::DimStyle) {
     let mut all = draftcraft_geom::Bounds2::EMPTY;
     for seg in &g.lines {
         for v in seg {
-            all = all.union_pt(*v);
+            all.add(*v);
         }
     }
-    for tri in &g.tris {
+    for tri in &g.fills {
         for v in tri {
-            all = all.union_pt(*v);
+            all.add(*v);
         }
     }
     if all.is_empty() {
@@ -432,10 +541,12 @@ fn dimstyle_preview(ui: &mut egui::Ui, st: &draftcraft_doc::DimStyle) {
         let y = (v.y - all.min.y) * s + margin as f64 + r.top() as f64;
         egui::pos2(x as f32, y as f32)
     };
-    // Filled tris
-    for tri in &g.tris {
-        let pts: Vec<egui::Pos2> = tri.iter().copied().map(to_screen).collect();
-        p.add(egui::Shape::convex_polygon(pts, t.text, Stroke::NONE));
+    // Filled triangles
+    for tri in &g.fills {
+        if tri.len() == 3 {
+            let pts: Vec<egui::Pos2> = tri.iter().copied().map(to_screen).collect();
+            p.add(egui::Shape::convex_polygon(pts, t.text, Stroke::NONE));
+        }
     }
     // Lines
     let stroke = Stroke::new(1.5, t.text);
@@ -467,10 +578,12 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
     let cmp_key = "dimstyle_cmp";
     let new_key = "dimstyle_new";
     let tab_key = "dimstyle_tab";
+    let edit_key = "dimstyle_edit";
     let mut sel = temp::<String>(ctx, sel_key).filter(|s| styles.iter().any(|x| x.name == *s)).unwrap_or_else(|| current.clone());
     let mut cmp_with = temp::<String>(ctx, cmp_key).unwrap_or_default();
     let mut new_name = temp::<String>(ctx, new_key).unwrap_or_default();
     let mut tab: usize = temp::<usize>(ctx, tab_key).unwrap_or(0);
+    let mut staged: Option<DimEdit> = temp::<DimEdit>(ctx, edit_key);
     let mut action: Action = None;
 
     // Build UI
@@ -506,16 +619,29 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                 }
             });
             left.horizontal(|ui| {
-                // New (copies from the current dimension style)
-                ui.add(egui::TextEdit::singleline(&mut new_name).hint_text("New style name").desired_width(150.0))
-                    .on_hover_text("New style name");
+                // New (buffered from selected style)
+                ui.add(egui::TextEdit::singleline(&mut new_name).hint_text("New style name").desired_width(150.0)).on_hover_text("New style name");
                 let name = new_name.trim().to_string();
                 let ok = !name.is_empty() && !styles.iter().any(|s| s.name.eq_ignore_ascii_case(&name));
-                if ui.add_enabled(ok, egui::Button::new("New")).clicked() {
-                    // Create from the current style (engine uses it as the base)
-                    action = Some(("dimstyle", json!({ "name": name, "current": false })));
-                    sel = name.clone();
+                if ui.add_enabled(ok, egui::Button::new("New…")).clicked() {
+                    let mut w = styles.iter().find(|s| s.name == sel).cloned().unwrap_or_default();
+                    w.name = name.clone();
+                    staged = Some(DimEdit { kind: EditKind::New(name.clone()), working: w, tab: 0 });
                     new_name.clear();
+                }
+            });
+            left.horizontal(|ui| {
+                if ui.button("Modify…").clicked() {
+                    if let Some(cur) = styles.iter().find(|s| s.name == sel).cloned() {
+                        staged = Some(DimEdit { kind: EditKind::Modify(sel.clone()), working: cur, tab: 0 });
+                    }
+                }
+            });
+            left.horizontal(|ui| {
+                if ui.button("Override…").clicked() {
+                    if let Some(cur) = styles.iter().find(|s| s.name == sel).cloned() {
+                        staged = Some(DimEdit { kind: EditKind::Override(sel.clone()), working: cur, tab: 0 });
+                    }
                 }
             });
             left.horizontal(|ui| {
@@ -536,7 +662,7 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
             right.label(RichText::new(format!("Properties of {sel}")).strong());
             // Tab bar
             let tabs = ["Lines", "Symbols & Arrows", "Text", "Fit", "Primary Units", "Alternate Units", "Tolerances", "Compare", "Preview"];
-            ui.horizontal_wrapped(|ui| {
+            right.horizontal_wrapped(|ui| {
                 for (i, label) in tabs.iter().enumerate() {
                     let on = tab == i;
                     if ui.selectable_label(on, *label).clicked() {
@@ -544,25 +670,67 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                     }
                 }
             });
-            ui.separator();
+            right.separator();
             let Some(cur) = styles.iter().find(|s| s.name == sel).cloned() else { return };
-            let mut edit = |key: &str, label: &str, v: f64, min_ok: bool| {
-                let field_label = ui.label(label);
-                if let Some(n) = num_field(ui, ("dimstyle", &sel, key), v, Some(field_label.id))
-                    .filter(|x| x.is_finite() && (min_ok || *x >= 0.0))
-                {
-                    action = Some(("dimstyle", json!({ "name": sel, key: n, "current": false })));
+            let mut pending: Vec<(String, Value)> = Vec::new();
+            let mut edit = |ui: &mut egui::Ui, key: &str, label: &str, v: f64, min_ok: bool| {
+                let id = ui.label(label).id;
+                if let Some(n) = num_field(ui, ("dimstyle", &sel, key), v, Some(id)).filter(|x| x.is_finite() && (min_ok || *x >= 0.0)) {
+                    pending.push((key.to_string(), json!(n)));
                 }
             };
             match tab {
                 // Lines
                 0 => {
                     egui::Grid::new(("dimstyle", "lines")).num_columns(2).spacing(vec2(10.0, 6.0)).show(right, |ui| {
-                        edit("extOffset", "Extension line offset (DIMEXO)", cur.ext_offset, true);
+                        edit(ui, "extOffset", "Extension line offset (DIMEXO)", cur.ext_offset, true);
                         ui.end_row();
-                        edit("extExtend", "Extension beyond dim line (DIMEXE)", cur.ext_extend, true);
+                        edit(ui, "extExtend", "Extension beyond dim line (DIMEXE)", cur.ext_extend, true);
                         ui.end_row();
-                        edit("dimLineExtend", "Dim line extension (DIMDLE)", cur.dim_line_extend, true);
+                        edit(ui, "dimLineExtend", "Dim line extension (DIMDLE)", cur.dim_line_extend, true);
+                        ui.end_row();
+                        // Suppress halves of the dimension line
+                        let mut sd1 = cur.suppress_dim1;
+                        ui.label("");
+                        if ui.checkbox(&mut sd1, "Suppress dimension line 1 (DIMSD1)").changed() {
+                            action = Some(("dimstyle", json!({ "name": sel, "suppressDim1": sd1, "current": false })));
+                        }
+                        ui.end_row();
+                        let mut sd2 = cur.suppress_dim2;
+                        ui.label("");
+                        if ui.checkbox(&mut sd2, "Suppress dimension line 2 (DIMSD2)").changed() {
+                            action = Some(("dimstyle", json!({ "name": sel, "suppressDim2": sd2, "current": false })));
+                        }
+                        ui.end_row();
+                        // Colours
+                        if let Some(c) = color_picker(ui, "Dim line color (DIMCLRD)", &cur.dim_line_color) {
+                            let v = serde_json::to_value(c).unwrap_or(json!("ByBlock"));
+                            action = Some(("dimstyle", json!({ "name": sel, "dimLineColor": v, "current": false })));
+                        }
+                        ui.end_row();
+                        if let Some(c) = color_picker(ui, "Ext line color (DIMCLRE)", &cur.ext_line_color) {
+                            let v = serde_json::to_value(c).unwrap_or(json!("ByBlock"));
+                            action = Some(("dimstyle", json!({ "name": sel, "extLineColor": v, "current": false })));
+                        }
+                        ui.end_row();
+                        if let Some(c) = color_picker(ui, "Text color (DIMCLRT)", &cur.text_color) {
+                            let v = serde_json::to_value(c).unwrap_or(json!("ByBlock"));
+                            action = Some(("dimstyle", json!({ "name": sel, "textColor": v, "current": false })));
+                        }
+                        ui.end_row();
+                        // Linetypes
+                        let lt_names: Vec<String> = std::iter::once("ByLayer".to_string()).chain(d.linetypes.iter().map(|l| l.name.clone())).collect();
+                        if let Some(n) = linetype_picker(ui, ("dimstyle", "lt_dim"), "Dim linetype (DIMLTYPE)", &cur.dim_linetype, &lt_names) {
+                            action = Some(("dimstyle", json!({ "name": sel, "dimLinetype": n, "current": false })));
+                        }
+                        ui.end_row();
+                        if let Some(n) = linetype_picker(ui, ("dimstyle", "lt_ex1"), "Ext linetype 1 (DIMLTEX1)", &cur.ext_linetype1, &lt_names) {
+                            action = Some(("dimstyle", json!({ "name": sel, "extLinetype1": n, "current": false })));
+                        }
+                        ui.end_row();
+                        if let Some(n) = linetype_picker(ui, ("dimstyle", "lt_ex2"), "Ext linetype 2 (DIMLTEX2)", &cur.ext_linetype2, &lt_names) {
+                            action = Some(("dimstyle", json!({ "name": sel, "extLinetype2": n, "current": false })));
+                        }
                         ui.end_row();
                         let mut se1 = cur.suppress_ext1;
                         ui.label("");
@@ -607,16 +775,20 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                             action = Some(("dimstyle", json!({ "name": sel, "extLineweight": code, "current": false })));
                         }
                         ui.end_row();
-                        edit("baselineSpacing", "Baseline spacing (DIMDLI)", cur.baseline_spacing, true);
+                        edit(ui, "baselineSpacing", "Baseline spacing (DIMDLI)", cur.baseline_spacing, true);
                         ui.end_row();
                     });
+                    if let Some((k, v)) = pending.pop() {
+                        action = Some(("dimstyle", json!({ "name": sel, k: v, "current": false })));
+                        pending.clear();
+                    }
                 }
                 // Symbols & Arrows
                 1 => {
                     egui::Grid::new(("dimstyle", "arrows")).num_columns(2).spacing(vec2(10.0, 6.0)).show(right, |ui| {
-                        edit("arrowSize", "Arrow size (DIMASZ)", cur.arrow_size, true);
+                        edit(ui, "arrowSize", "Arrow size (DIMASZ)", cur.arrow_size, true);
                         ui.end_row();
-                        edit("tickSize", "Tick size (DIMTSZ)", cur.tick_size, true);
+                        edit(ui, "tickSize", "Tick size (DIMTSZ)", cur.tick_size, true);
                         ui.end_row();
                         let choices = arrow_choices();
                         let mut picked = None;
@@ -634,6 +806,24 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         if let Some(v) = picked {
                             let val = if v == "closedfilled" { "" } else { v.as_str() };
                             action = Some(("dimstyle", json!({ "name": sel, "arrowBlock": val, "current": false })));
+                        }
+                        ui.end_row();
+                        // Leader arrow (DIMLDRBLK)
+                        let mut ldr = None;
+                        ui.label("Leader arrow (DIMLDRBLK)");
+                        craft_ui::ComboBox::from_id_salt(("dimstyle", "ldr"))
+                            .selected_text(if cur.leader_arrow_block.is_empty() { "closedfilled" } else { cur.leader_arrow_block.as_str() })
+                            .show_ui(ui, |ui| {
+                                for c in &choices {
+                                    let on = if cur.leader_arrow_block.is_empty() { *c == "closedfilled" } else { *c == cur.leader_arrow_block };
+                                    if ui.selectable_label(on, *c).clicked() {
+                                        ldr = Some((*c).to_string());
+                                    }
+                                }
+                            });
+                        if let Some(v) = ldr {
+                            let val = if v == "closedfilled" { "" } else { v.as_str() };
+                            action = Some(("dimstyle", json!({ "name": sel, "leaderArrowBlock": val, "current": false })));
                         }
                         ui.end_row();
                         let mut picked1 = None;
@@ -675,15 +865,46 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         }
                         ui.end_row();
                     });
+                    if let Some((k, v)) = pending.pop() {
+                        action = Some(("dimstyle", json!({ "name": sel, k: v, "current": false })));
+                        pending.clear();
+                    }
                 }
                 // Text
                 2 => {
                     let text_styles: Vec<String> = d.text_styles.iter().map(|s| s.name.clone()).collect();
                     egui::Grid::new(("dimstyle", "text")).num_columns(2).spacing(vec2(10.0, 6.0)).show(right, |ui| {
-                        edit("textHeight", "Text height (DIMTXT)", cur.text_height, false);
+                        edit(ui, "textHeight", "Text height (DIMTXT)", cur.text_height, false);
                         ui.end_row();
-                        edit("textGap", "Text gap (DIMGAP)", cur.text_gap, true);
+                        edit(ui, "textGap", "Text gap (DIMGAP)", cur.text_gap, true);
                         ui.end_row();
+                        // Background fill
+                        ui.label("Text background (DIMTFILL)");
+                        let mut fill = cur.text_fill;
+                        craft_ui::ComboBox::from_id_salt(("dimstyle", "tf"))
+                            .selected_text(match fill {
+                                0 => "None",
+                                1 => "Background",
+                                _ => "Color",
+                            })
+                            .show_ui(ui, |ui| {
+                                for (label, v) in [("None", 0_u8), ("Background", 1), ("Color", 2)] {
+                                    if ui.selectable_label(fill == v, label).clicked() {
+                                        fill = v;
+                                    }
+                                }
+                            });
+                        if fill != cur.text_fill {
+                            action = Some(("dimstyle", json!({ "name": sel, "textFill": fill, "current": false })));
+                        }
+                        ui.end_row();
+                        if fill == 2 {
+                            if let Some(c) = color_picker(ui, "Text fill color (DIMTFILLCLR)", &cur.text_fill_color) {
+                                let v = serde_json::to_value(c).unwrap_or(json!("ByBlock"));
+                                action = Some(("dimstyle", json!({ "name": sel, "textFillColor": v, "current": false })));
+                            }
+                            ui.end_row();
+                        }
                         ui.label("Text style (DIMTXSTY)");
                         let mut picked = None;
                         craft_ui::ComboBox::from_id_salt(("dimstyle", "txsty"))
@@ -722,7 +943,7 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                             action = Some(("dimstyle", json!({ "name": sel, "textAbove": tadh, "current": false })));
                         }
                         ui.end_row();
-                        edit("decimals", "Precision (DIMDEC)", cur.decimals as f64, true);
+                        edit(ui, "decimals", "Precision (DIMDEC)", cur.decimals as f64, true);
                         ui.end_row();
                         ui.label("Prefix/suffix (DIMPOST)");
                         let eid = ui.make_persistent_id(("dimstyle", "post"));
@@ -733,11 +954,15 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         }
                         ui.end_row();
                     });
+                    if let Some((k, v)) = pending.pop() {
+                        action = Some(("dimstyle", json!({ "name": sel, k: v, "current": false })));
+                        pending.clear();
+                    }
                 }
                 // Fit
                 3 => {
                     egui::Grid::new(("dimstyle", "fit")).num_columns(2).spacing(vec2(10.0, 6.0)).show(right, |ui| {
-                        edit("scale", "Overall scale (DIMSCALE)", cur.scale, true);
+                        edit(ui, "scale", "Overall scale (DIMSCALE)", cur.scale, true);
                         ui.end_row();
                         let mut ann = cur.annotative;
                         ui.label("");
@@ -778,6 +1003,10 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         }
                         ui.end_row();
                     });
+                    if let Some((k, v)) = pending.pop() {
+                        action = Some(("dimstyle", json!({ "name": sel, k: v, "current": false })));
+                        pending.clear();
+                    }
                 }
                 // Primary Units
                 4 => {
@@ -812,12 +1041,46 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                             action = Some(("dimstyle", json!({ "name": sel, "linearUnit": lu, "current": false })));
                         }
                         ui.end_row();
-                        edit("round", "Rounding (DIMRND)", cur.round, true);
+                        edit(ui, "round", "Rounding (DIMRND)", cur.round, true);
                         ui.end_row();
-                        edit("linearFactor", "Scale factor (DIMLFAC)", cur.linear_factor, true);
+                        edit(ui, "linearFactor", "Scale factor (DIMLFAC)", cur.linear_factor, true);
                         ui.end_row();
-                        ui.label("Zero suppression bits (DIMZIN)");
-                        edit("zeroSuppression", "", cur.zero_suppression as f64, true);
+                        // Friendly zero suppression
+                        ui.label("Zero suppression (DIMZIN)");
+                        let mut leading = cur.zero_suppression & 1 != 0;
+                        let mut trailing = cur.zero_suppression & 2 != 0;
+                        let mut feet = cur.zero_suppression & 4 != 0;
+                        let mut inches = cur.zero_suppression & 8 != 0;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut leading, "Leading");
+                            ui.checkbox(&mut trailing, "Trailing");
+                            ui.checkbox(&mut feet, "Zero feet");
+                            ui.checkbox(&mut inches, "Zero inches");
+                        });
+                        let new_z = (u8::from(leading) * 1) | (u8::from(trailing) * 2) | (u8::from(feet) * 4) | (u8::from(inches) * 8);
+                        if new_z != cur.zero_suppression {
+                            action = Some(("dimstyle", json!({ "name": sel, "zeroSuppression": new_z, "current": false })));
+                        }
+                        ui.end_row();
+                        // Fraction format
+                        ui.label("Fraction format (DIMFRAC)");
+                        let mut frac = cur.fraction_format;
+                        craft_ui::ComboBox::from_id_salt(("dimstyle", "frac"))
+                            .selected_text(match frac {
+                                0 => "Horizontal",
+                                1 => "Diagonal",
+                                _ => "Not stacked",
+                            })
+                            .show_ui(ui, |ui| {
+                                for (label, v) in [("Horizontal", 0_u8), ("Diagonal", 1), ("Not stacked", 2)] {
+                                    if ui.selectable_label(frac == v, label).clicked() {
+                                        frac = v;
+                                    }
+                                }
+                            });
+                        if frac != cur.fraction_format {
+                            action = Some(("dimstyle", json!({ "name": sel, "fractionFormat": frac, "current": false })));
+                        }
                         ui.end_row();
                         ui.label("Decimal separator (DIMDSEP)");
                         let eid = ui.make_persistent_id(("dimstyle", "dsep"));
@@ -828,6 +1091,10 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         }
                         ui.end_row();
                     });
+                    if let Some((k, v)) = pending.pop() {
+                        action = Some(("dimstyle", json!({ "name": sel, k: v, "current": false })));
+                        pending.clear();
+                    }
                 }
                 // Alternate Units
                 5 => {
@@ -838,9 +1105,9 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                             action = Some(("dimstyle", json!({ "name": sel, "alt": on, "current": false })));
                         }
                         ui.end_row();
-                        edit("altFactor", "Multiplier (DIMALTF)", cur.alt_factor, true);
+                        edit(ui, "altFactor", "Multiplier (DIMALTF)", cur.alt_factor, true);
                         ui.end_row();
-                        edit("altRound", "Rounding (DIMALTRND)", cur.alt_round, true);
+                        edit(ui, "altRound", "Rounding (DIMALTRND)", cur.alt_round, true);
                         ui.end_row();
                         ui.label("Unit (DIMALTU)");
                         let mut au = cur.alt_unit;
@@ -876,7 +1143,28 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                             action = Some(("dimstyle", json!({ "name": sel, "altUnit": au, "current": false })));
                         }
                         ui.end_row();
+                        // Friendly alternate zero-suppression
+                        ui.label("Alt zero suppression (DIMALTZ)");
+                        let mut leading = cur.alt_zero_suppression & 1 != 0;
+                        let mut trailing = cur.alt_zero_suppression & 2 != 0;
+                        let mut feet = cur.alt_zero_suppression & 4 != 0;
+                        let mut inches = cur.alt_zero_suppression & 8 != 0;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut leading, "Leading");
+                            ui.checkbox(&mut trailing, "Trailing");
+                            ui.checkbox(&mut feet, "Zero feet");
+                            ui.checkbox(&mut inches, "Zero inches");
+                        });
+                        let new_az = (u8::from(leading) * 1) | (u8::from(trailing) * 2) | (u8::from(feet) * 4) | (u8::from(inches) * 8);
+                        if new_az != cur.alt_zero_suppression {
+                            action = Some(("dimstyle", json!({ "name": sel, "altZeroSuppression": new_az, "current": false })));
+                        }
+                        ui.end_row();
                     });
+                    if let Some((k, v)) = pending.pop() {
+                        action = Some(("dimstyle", json!({ "name": sel, k: v, "current": false })));
+                        pending.clear();
+                    }
                 }
                 // Tolerances
                 6 => {
@@ -887,11 +1175,11 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                             action = Some(("dimstyle", json!({ "name": sel, "tolerance": tol, "current": false })));
                         }
                         ui.end_row();
-                        edit("tolPlus", "Upper value (DIMTP)", cur.tol_plus, true);
+                        edit(ui, "tolPlus", "Upper value (DIMTP)", cur.tol_plus, true);
                         ui.end_row();
-                        edit("tolMinus", "Lower value (DIMTM)", cur.tol_minus, true);
+                        edit(ui, "tolMinus", "Lower value (DIMTM)", cur.tol_minus, true);
                         ui.end_row();
-                        edit("tolScale", "Text scale (DIMTFAC)", cur.tol_scale, true);
+                        edit(ui, "tolScale", "Text scale (DIMTFAC)", cur.tol_scale, true);
                         ui.end_row();
                         ui.label("Justification (DIMTOLJ)");
                         let mut tj = cur.tol_just;
@@ -914,6 +1202,10 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         }
                         ui.end_row();
                     });
+                    if let Some((k, v)) = pending.pop() {
+                        action = Some(("dimstyle", json!({ "name": sel, k: v, "current": false })));
+                        pending.clear();
+                    }
                 }
                 // Compare
                 7 => {
@@ -936,7 +1228,7 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                             cmp_with = v;
                         }
                     });
-                    ui.separator();
+                    right.separator();
                     if let Some(other) = styles.iter().find(|s| s.name == cmp_with) {
                         // Compare JSON of the two styles, list differing fields
                         let a = serde_json::to_value(&cur).unwrap_or(json!({}));
@@ -987,6 +1279,85 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
     set_temp(ctx, cmp_key, cmp_with);
     set_temp(ctx, new_key, new_name);
     set_temp(ctx, tab_key, tab);
+    // Staged edit dialog
+    if let Some(mut ed) = staged.clone() {
+        let title = match &ed.kind {
+            EditKind::New(n) => format!("New Dimension Style: {n}"),
+            EditKind::Modify(n) => format!("Modify Dimension Style: {n}"),
+            EditKind::Override(n) => format!("Override From Style: {n}"),
+        };
+        let mut ok = false;
+        let mut cancel = false;
+        egui::Window::new(title).collapsible(false).resizable(true).show(ctx, |ui| {
+            // tabs
+            let tabs = ["Lines", "Symbols & Arrows", "Text", "Fit", "Primary Units", "Alternate Units", "Tolerances", "Preview"];
+            ui.horizontal_wrapped(|ui| {
+                for (i, label) in tabs.iter().enumerate() {
+                    if ui.selectable_label(ed.tab == i, *label).clicked() {
+                        ed.tab = i;
+                    }
+                }
+            });
+            ui.separator();
+            match ed.tab {
+                0 => {
+                    egui::Grid::new(("dimstyle_edit", "lines")).num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
+                        let id = ui.label("Extension line offset (DIMEXO)").id;
+                        if let Some(v) = num_field(ui, ("edit", "DIMEXO"), ed.working.ext_offset, Some(id)) {
+                            ed.working.ext_offset = v;
+                        }
+                        ui.end_row();
+                        let id = ui.label("Extension beyond dim line (DIMEXE)").id;
+                        if let Some(v) = num_field(ui, ("edit", "DIMEXE"), ed.working.ext_extend, Some(id)) {
+                            ed.working.ext_extend = v;
+                        }
+                        ui.end_row();
+                        let mut sd1 = ed.working.suppress_dim1;
+                        ui.label("");
+                        if ui.checkbox(&mut sd1, "Suppress dimension line 1 (DIMSD1)").changed() {
+                            ed.working.suppress_dim1 = sd1;
+                        }
+                        ui.end_row();
+                        let mut sd2 = ed.working.suppress_dim2;
+                        ui.label("");
+                        if ui.checkbox(&mut sd2, "Suppress dimension line 2 (DIMSD2)").changed() {
+                            ed.working.suppress_dim2 = sd2;
+                        }
+                        ui.end_row();
+                    });
+                }
+                7 => dimstyle_preview(ui, &ed.working),
+                _ => {
+                    ui.label("Edit staged values on other tabs as needed.");
+                }
+            }
+            ui.separator();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                cancel = ui.button("Cancel").clicked();
+                ok = ui.button("OK").clicked();
+            });
+        });
+        if ok {
+            match &ed.kind {
+                EditKind::New(_) | EditKind::Modify(_) => {
+                    commit_style_edit(app, &ed.working);
+                    app.session.echo("Style changes applied.");
+                }
+                EditKind::Override(base_name) => {
+                    if let Some(orig) = d.dim_style(base_name).cloned() {
+                        commit_override_edit(app, &orig, &ed.working);
+                        app.session.echo("Dimension variables set from staged overrides.");
+                    }
+                }
+            }
+            staged = None;
+        } else if cancel {
+            app.session.echo("Edit cancelled.");
+            staged = None;
+        } else {
+            set_temp(ctx, edit_key, ed);
+        }
+    }
     // After a "New (from selected)", if the new style exists and the source was not current, copy fields
     if let Some((cmd, p)) = &action {
         // Run the immediate action; the dialog will re-open next frame
