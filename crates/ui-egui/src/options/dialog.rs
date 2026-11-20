@@ -229,6 +229,8 @@ fn files(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) {
         ui.end_row();
         savefile_row(ui, changes);
         ui.end_row();
+        plot_styles_row(app, ui, changes);
+        ui.end_row();
     });
     hint(ui, crate::tl!("New and the first drawing at startup use these units unless a default template is set (QNEWTEMPLATE)."));
     hint(ui, crate::tl!("A drawing opened from a file keeps that file's format."));
@@ -312,6 +314,32 @@ fn savefile_row(ui: &mut egui::Ui, changes: &mut Map<String, Value>) {
             changes.insert("SAVEFILEPATH".into(), json!(path.trim()));
         }
     }
+}
+
+/// User plot styles folder row.
+fn plot_styles_row(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Value>) {
+    let label = ui.label(crate::tl!("Plot styles folder"));
+    let id = egui::Id::unique("cc_options_plotstylepath");
+    let current = draftcraft_engine::cmd::plotstyles::user_folder().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let mut path = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| current.clone());
+    let r = ui.add(egui::TextEdit::singleline(&mut path).desired_width(330.0)).labelled_by(label.id);
+    if r.changed() {
+        ui.data_mut(|d| d.insert_temp(id, path.clone()));
+    }
+    if r.lost_focus() {
+        ui.data_mut(|d| d.remove::<String>(id));
+        if path.trim() != current {
+            changes.insert("PLOTSTYLEPATH".into(), json!(path.trim()));
+        }
+    }
+    ui.horizontal(|ui| {
+        if ui.button(crate::tl!("Plot Style Manager...")).clicked() {
+            app.ui.dialog = Some("stylesmanager".into());
+        }
+        if ui.button(crate::tl!("Reload Plot Styles")).clicked() {
+            let _ = app.run("stylesmanager.reload", json!({}));
+        }
+    });
 }
 
 /// Drafting tab: object-snap marker size and aperture previews plus the Drafting Settings entry; edits accumulate in `changes` and the entry may request a command through `start`.

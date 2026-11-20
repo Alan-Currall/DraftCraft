@@ -173,6 +173,8 @@ impl Session {
     }
     /// A session with no open drawing (the Start tab).
     pub fn empty() -> Self {
+        // Ensure the external plot style provider is registered once for this process.
+        crate::cmd::plotstyles::register_provider_once();
         Session {
             docs: Vec::new(),
             active: 0,

@@ -53,6 +53,8 @@ pub const PROFILE_VARS: &[&str] = &[
     "PICKDRAG",
     "MAXARRAY",
     "MEASUREINIT",
+    // Path to the user plot styles folder (used to discover .ctb/.stb/.json tables).
+    "PLOTSTYLEPATH",
 ];
 
 /// The most profile entries [`restore`] reads (a saved profile is untrusted input).

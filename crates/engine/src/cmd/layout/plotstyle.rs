@@ -12,7 +12,7 @@ use super::super::targets;
 use super::{CommandSpec, Result, Session, bad, str_param};
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut v = vec![
         CommandSpec::new("plotstyle", "Plot Style...", run_plotstyle)
             .menu(&["Format", "Plot Style..."])
             .params(
@@ -23,7 +23,10 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(
                 "{action?: list (default)|get|new|set|delete|load|save, name?: table (\"x.ctb\"/\"x.stb\"), kind?: colorDependent|named (new), from?: table to copy (new), description?, style?: {name, color?: \"#rrggbb\"|null, grayscale?, screening?: 0-100, linetype?: name|null, lineweight?: mm|null, end?, join?, fill?, description?} (set), removeStyle?: name (set, named tables), path? (load/save; save without one returns `text`), text? (load)}",
             ),
-    ]
+    ];
+    // User-plot-styles helper commands (import/reload)
+    v.extend(super::super::plotstyles::specs());
+    v
 }
 
 // ---------- PLOTSTYLE ----------
@@ -193,6 +196,7 @@ fn run_stylesmanager(s: &mut Session, p: &Value) -> Result<Value> {
     match action.as_str() {
         "list" => {
             let d = s.doc()?;
+            // Names include drawing, user folder and built-ins (provider is registered).
             let tables: Vec<Value> = draftcraft_doc::plot_style_table_names(d)
                 .iter()
                 .filter_map(|n| draftcraft_doc::plot_style_table(d, n))

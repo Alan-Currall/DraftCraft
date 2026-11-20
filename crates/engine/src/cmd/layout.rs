@@ -665,7 +665,7 @@ fn run_pagesetup(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({
             "layouts": d.layouts.iter().map(|l| json!({"name": l.name, "page": serde_json::to_value(&l.page).unwrap_or(Value::Null)})).collect::<Vec<_>>(),
             "papers": draftcraft_render::PAPER_SIZES.iter().map(|p| p.name).collect::<Vec<_>>(),
-            "plotStyleTables": draftcraft_doc::BUILTIN_PLOT_STYLE_TABLES,
+            "plotStyleTables": draftcraft_doc::plot_style_table_names(d),
             "devices": super::plotters::device_names(),
         }));
     };

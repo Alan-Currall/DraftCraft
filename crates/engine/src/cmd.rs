@@ -38,6 +38,7 @@ mod mtext_opts;
 mod overkill;
 mod pline_opts;
 pub mod plotters;
+pub mod plotstyles;
 mod props;
 pub use draw2::breakline::BreaklineOptions;
 pub use props::MatchProps;
@@ -219,6 +220,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(settings::specs());
         v.extend(options::specs());
         v.extend(config::specs());
+        v.extend(plotstyles::specs());
         v.extend(utility::specs());
         v.extend(table::specs());
         v.extend(tolerance::specs());
