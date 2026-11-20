@@ -33,7 +33,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .alias(&["iat"])
             .menu(&["Insert", "Raster Image Reference..."])
             .params(
-                "{path: PNG/JPEG/BMP/TIFF file (saved as given; a relative path is relative to this drawing's folder), data?: base64 file contents \
+                "{path: PNG/JPEG/BMP/TIFF file (saved as given; a relative path is relative to this drawing's folder), pathType?: \"full\"|\"relative\"|\"none\", data?: base64 file contents \
              (instead of reading `path`), at?: [x,y] lower-left corner (default 0,0), scale?: number (default 1: the image is one drawing unit \
              wide), width?: width in drawing units (instead of `scale`), rotation? (degrees), name? (default: the file name)} → {name, handle, \
              path, pixels: [w, h], size: [w, h]}",
@@ -245,8 +245,61 @@ fn def_name(d: &Drawing, path: &str, wanted: &str) -> String {
 
 const ID: &str = "imageattach";
 
+fn to_saved_path(s: &Session, raw: &str, path_type: Option<&str>) -> String {
+    let Some(t) = path_type else {
+        return raw.to_string();
+    };
+    if t.eq_ignore_ascii_case("none") {
+        return std::path::Path::new(raw).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| raw.to_string());
+    }
+    if t.eq_ignore_ascii_case("relative") {
+        let host = s.state().ok().and_then(|st| st.path.clone());
+        if let Some(h) = host
+            && let Ok(abs_file) = std::path::absolute(raw)
+            && let Ok(abs_base) = std::path::absolute(&h)
+        {
+            return relative_path(&abs_file, &abs_base).unwrap_or_else(|| raw.to_string());
+        }
+    }
+    // full: as absolute when possible, else as given; unknown: keep as given
+    if t.eq_ignore_ascii_case("full") {
+        std::path::absolute(raw).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| raw.to_string())
+    } else {
+        raw.to_string()
+    }
+}
+
+pub(crate) fn relative_path(file: &std::path::Path, base: &std::path::Path) -> Option<String> {
+    let mut file_components: Vec<_> = file.components().collect();
+    let mut base_components: Vec<_> = base.components().collect();
+    // On Windows, different prefixes (drive letters/UNC) cannot be relativized.
+    if cfg!(windows) {
+        use std::path::Component;
+        let f_root = file_components.first().and_then(|c| match c { Component::Prefix(p) => Some(*p), _ => None });
+        let b_root = base_components.first().and_then(|c| match c { Component::Prefix(p) => Some(*p), _ => None });
+        if f_root != b_root {
+            return None;
+        }
+    }
+    // Drop common prefix
+    while !file_components.is_empty() && !base_components.is_empty() && file_components.first() == base_components.first() {
+        file_components.remove(0);
+        base_components.remove(0);
+    }
+    let mut rel = std::path::PathBuf::new();
+    for _ in 0..base_components.len() {
+        rel.push("..");
+    }
+    for c in file_components {
+        rel.push(c.as_os_str());
+    }
+    Some(rel.to_string_lossy().into_owned())
+}
+
 pub(crate) fn run_imageattach(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = str_param(p, "path").map(str::trim).filter(|x| !x.is_empty()).ok_or_else(|| bad(ID, "`path` is required"))?.to_string();
+    let raw_path = str_param(p, "path").map(str::trim).filter(|x| !x.is_empty()).ok_or_else(|| bad(ID, "`path` is required"))?;
+    let saved_path = to_saved_path(s, raw_path, str_param(p, "pathType"));
+    let path = saved_path;
     if path.len() > MAX_PATH {
         return Err(bad(ID, "`path` is too long"));
     }

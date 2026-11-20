@@ -35,7 +35,7 @@ const MAX_PAGES_LOADED: usize = 200;
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("pdfattach", "PDF Underlay...", run_pdfattach).alias(&["pdfat"]).menu(&["Insert", "PDF Underlay..."]).params(
-            "{path: PDF file (saved as given; a relative path is relative to this drawing's folder), data?: base64 file contents (instead of \
+            "{path: PDF file (saved as given; a relative path is relative to this drawing's folder), pathType?: \"full\"|\"relative\"|\"none\", data?: base64 file contents (instead of \
              reading `path`), page?: number from 1 (default 1), at?: [x,y] lower-left corner (default 0,0), scale?: drawing units per inch \
              (default: the drawing's insertion units, 25.4 for millimetres), rotation? (degrees), name?} → {name, handle, path, page, pages, \
              size: [w, h] in drawing units}",
@@ -51,6 +51,9 @@ pub fn specs() -> Vec<CommandSpec> {
             .noundo(),
         CommandSpec::new("pdfunderlay.thumb", "PDF Underlay Thumbnail", run_thumb)
             .params("{path: PDF file, data?: base64 file bytes, page?: number from 1 (default 1), maxSize?: pixels (longer side, default 256)} → {rgba: base64, width, height}")
+            .noundo(),
+        CommandSpec::new("pdfunderlay.pages", "PDF Underlay Pages", run_pages)
+            .params("{path: PDF file, data?: base64 file bytes} → {pages: number}")
             .noundo(),
     ]
 }
@@ -142,9 +145,33 @@ fn stem(path: &str) -> String {
 
 const ATTACH: &str = "pdfattach";
 
+fn to_saved_path(s: &Session, raw: &str, path_type: Option<&str>) -> String {
+    let Some(t) = path_type else {
+        return raw.to_string();
+    };
+    if t.eq_ignore_ascii_case("none") {
+        return std::path::Path::new(raw).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| raw.to_string());
+    }
+    if t.eq_ignore_ascii_case("relative") {
+        let host = s.state().ok().and_then(|st| st.path.clone());
+        if let Some(h) = host
+            && let Ok(abs_file) = std::path::absolute(raw)
+            && let Ok(abs_base) = std::path::absolute(&h)
+        {
+            return super::image::relative_path(&abs_file, &abs_base).unwrap_or_else(|| raw.to_string());
+        }
+    }
+    if t.eq_ignore_ascii_case("full") {
+        std::path::absolute(raw).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| raw.to_string())
+    } else {
+        raw.to_string()
+    }
+}
+
 pub(crate) fn run_pdfattach(s: &mut Session, p: &Value) -> Result<Value> {
     let hooks = pdf_hooks().ok_or_else(|| bad(ATTACH, "PDF files can't be read in this build"))?;
-    let path = path_param(ATTACH, p)?;
+    let raw_path = path_param(ATTACH, p)?;
+    let path = to_saved_path(s, &raw_path, str_param(p, "pathType"));
     let index = page_param(ATTACH, p)?;
     let (at, rotation, scale) = placement(s, ATTACH, p)?;
     let bytes = file_bytes(s, ATTACH, p, &path)?;
@@ -314,6 +341,14 @@ fn run_thumb(s: &mut Session, p: &Value) -> Result<Value> {
     let want_dpi = (want_ppp * POINTS_PER_INCH).clamp(36.0, UNDERLAY_DPI.max(72.0));
     let raster = (hooks.rasterize)(&bytes, index, want_dpi).map_err(|e| bad("pdfunderlay.thumb", format!("{path}: {e}")))?;
     Ok(json!({ "rgba": super::file::base64_encode(raster.rgba()), "width": raster.width(), "height": raster.height() }))
+}
+
+fn run_pages(s: &mut Session, p: &Value) -> Result<Value> {
+    let hooks = pdf_hooks().ok_or_else(|| bad("pdfunderlay.pages", "PDF files can't be read in this build"))?;
+    let path = path_param("pdfunderlay.pages", p)?;
+    let bytes = file_bytes(s, "pdfunderlay.pages", p, &path)?;
+    let pages = (hooks.pages)(&bytes).map_err(|e| bad("pdfunderlay.pages", format!("{path}: {e}")))?;
+    Ok(json!({ "pages": pages.len() }))
 }
 
 /// The standard lineweights in hundredths of a millimetre.
