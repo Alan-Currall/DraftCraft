@@ -190,7 +190,7 @@ fn stress_drawing(case: &str, n: usize) -> Drawing {
                     4 => EntityKind::Text(text(p(x, y), format!("T{i}"))),
                     5 => EntityKind::MText(mtext(p(x, y), format!("M{i}\\Pline two"))),
                     6 => EntityKind::Insert(insert("TAG", p(x, y), vec![Attrib { text: text(p(x, y), format!("{i}")), ..attdef("NO") }])),
-                    7 => EntityKind::Hatch(hatch(vec![HatchLoop { vertices: square(x, y, 1.5), outer: true, sources: Vec::new() }])),
+                    7 => EntityKind::Hatch(hatch(vec![HatchLoop { vertices: square(x, y, 1.5), edges: Vec::new(), outer: true, sources: Vec::new() }])),
                     _ => EntityKind::Dimension(Dimension {
                         kind: DimKind::Aligned,
                         defpt: p(x + 2.0, y + 1.0),
@@ -219,9 +219,10 @@ fn stress_drawing(case: &str, n: usize) -> Drawing {
             add(&mut d, EntityKind::LwPolyline(LwPolyline { vertices, closed: false, const_width: 0.0, elevation: 0.0, plinegen: false }));
         }
         "hatch" => {
-            let mut loops = vec![HatchLoop { vertices: square(0.0, 0.0, n as f64 * 3.0 + 3.0), outer: true, sources: Vec::new() }];
+            let mut loops = vec![HatchLoop { vertices: square(0.0, 0.0, n as f64 * 3.0 + 3.0), edges: Vec::new(), outer: true, sources: Vec::new() }];
             loops.extend((0..n).map(|i| HatchLoop {
                 vertices: square(1.0 + (i % 1000) as f64 * 3.0, 1.0 + (i / 1000) as f64 * 3.0, 1.0),
+                edges: Vec::new(),
                 outer: false,
                 sources: Vec::new(),
             }));

@@ -98,6 +98,12 @@ pub struct Common {
     /// The annotation scales an annotative object supports (empty: not annotative).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub anno_scales: Vec<crate::AnnoScale>,
+    /// The annotation scale factor (drawing units per paper unit) the object was authored at.
+    /// When present, drawing at a view's scale `f` applies `f / authored` so paper-sized parts
+    /// (text height, arrow sizes, DIM overrides, hatch scale, block scale) appear at the
+    /// intended size. `None` means authored at 1:1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anno_authored: Option<f64>,
     /// Other applications' extended data (xdata) as read from the drawing file: whole
     /// applications, each from its `1001` group on. It is part of the object, so a copy of the
     /// object (COPY, MIRROR, ARRAY, paste) carries it, as in AutoCAD.
@@ -119,6 +125,7 @@ impl Default for Common {
             extrusion: Vec3::Z,
             plot_style: "ByLayer".into(),
             anno_scales: Vec::new(),
+            anno_authored: None,
             xdata: Vec::new(),
         }
     }

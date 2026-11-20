@@ -509,7 +509,7 @@ impl Collector {
         let mut pts: Vec<Vec2> = Vec::new();
         let flat = |pts: &mut Vec<Vec2>, loops: &mut Vec<HatchLoop>| {
             if pts.len() >= 3 {
-                loops.push(HatchLoop { vertices: pts.drain(..).map(PolyVertex::new).collect(), outer: loops.is_empty(), sources: Vec::new() });
+                loops.push(HatchLoop { vertices: pts.drain(..).map(PolyVertex::new).collect(), edges: Vec::new(), outer: loops.is_empty(), sources: Vec::new() });
             }
             pts.clear();
         };
