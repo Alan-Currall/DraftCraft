@@ -117,7 +117,9 @@ Reading fixes hostile values:
 - A named table gets unique style names (at most 1024), with `Normal` first.
 - Files over 4 MB are refused.
 
-Binary `.ctb`/`.stb` files are not read. We haven't found a public specification of that format.
+Binary `.ctb`/`.stb` files: DraftCraft reads common variants best‑effort (zlib payloads with a JSON‑compatible
+table or a minimal color→lineweight mapping). Unsupported variants are reported cleanly and left
+unmodified. Writing `.ctb`/`.stb` is not implemented.
 
 ## In DXF files
 

@@ -332,14 +332,6 @@ fn plot_styles_row(app: &CadApp, ui: &mut egui::Ui, changes: &mut Map<String, Va
             changes.insert("PLOTSTYLEPATH".into(), json!(path.trim()));
         }
     }
-    ui.horizontal(|ui| {
-        if ui.button(crate::tl!("Plot Style Manager...")).clicked() {
-            app.ui.dialog = Some("stylesmanager".into());
-        }
-        if ui.button(crate::tl!("Reload Plot Styles")).clicked() {
-            let _ = app.run("stylesmanager.reload", json!({}));
-        }
-    });
 }
 
 /// Drafting tab: object-snap marker size and aperture previews plus the Drafting Settings entry; edits accumulate in `changes` and the entry may request a command through `start`.
