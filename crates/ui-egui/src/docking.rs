@@ -65,12 +65,20 @@ impl<'de> Deserialize<'de> for Panel {
             _ => {
                 if let Some(rest) = s.strip_prefix("ribbon:") {
                     let mut parts = rest.splitn(2, ':');
-                    let tab = Box::leak(parts.next().unwrap_or_default().to_string().into_boxed_str());
-                    let panel = Box::leak(parts.next().unwrap_or_default().to_string().into_boxed_str());
-                    Panel::Ribbon { tab, panel }
+                    let want_tab = parts.next().unwrap_or_default();
+                    let want_panel = parts.next().unwrap_or_default();
+                    // Resolve to the static TABS table; drop unknown gracefully (map to Properties).
+                    if let Some(tab) = crate::ribbon::TABS.iter().find(|t| t.name.eq_ignore_ascii_case(want_tab)) {
+                        if let Some(p) = tab.panels.iter().find(|p| p.title.eq_ignore_ascii_case(want_panel)) {
+                            Panel::Ribbon { tab: tab.name, panel: p.title }
+                        } else {
+                            Panel::Properties
+                        }
+                    } else {
+                        Panel::Properties
+                    }
                 } else {
-                    // Unknown: degrade gracefully to a harmless panel instead of erroring.
-                    Panel::Properties
+                    return Err(serde::de::Error::custom(format!("unknown panel id \"{s}\"")));
                 }
             }
         })
@@ -410,6 +418,8 @@ pub fn show(app: &mut crate::CadApp, ui: &mut egui::Ui) {
     // Floating title bars only move windows.
     style.side_edge_zones = false;
     style.new_dock_zones = true;
+    // Keep palette behaviour: do not expose top/bottom edge zones globally. Ribbon tear‑offs
+    // reach bottom docking explicitly from their drag start.
     style.drop_edges = Sides::NONE;
     style.title_bar_docks = false;
     let mut area = DockArea::new(egui::Id::unique("draftcraft-docking")).input_blocked(native_input_blocked(app, ui.ctx()));
@@ -442,9 +452,25 @@ pub fn show(app: &mut crate::CadApp, ui: &mut egui::Ui) {
     if stale {
         return;
     }
-    for action in output.actions {
-        if let Err(error) =
-            serde_json::to_value(action).map_err(|error| error.to_string()).and_then(|action| command(app, false, &json!({"action": action})))
+    for mut action in output.actions {
+        // Preserve palette behaviour: block bottom-edge splits for non-ribbon panels by converting to a float.
+        if let Action::Move { panel, anchor: _, ref placement } = action {
+            let to_float = match placement {
+                Placement::Split(Zone::Bottom) => !matches!(panel, Panel::Ribbon { .. }),
+                Placement::Split(Zone::Top) => true, // never accept top as a dock; always float
+                _ => false,
+            };
+            if to_float {
+                let area = app.canvas.rect.unwrap_or(egui::Rect::from_min_size(egui::pos2(220.0, 80.0), egui::vec2(1000.0, 800.0)));
+                let w = 300.0;
+                let h = 200.0;
+                let rect = [area.center().x - w / 2.0, area.bottom() - h - 16.0, w, h];
+                action = Action::Float { panel, rect };
+            }
+        }
+        if let Err(error) = serde_json::to_value(action)
+            .map_err(|error| error.to_string())
+            .and_then(|action| command(app, false, &json!({"action": action})))
         {
             app.set_status(format!("Panel move was not applied: {error}"));
         }

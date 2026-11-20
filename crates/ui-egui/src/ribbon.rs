@@ -1470,7 +1470,7 @@ fn ribbon(app: &mut CadApp, ui: &mut egui::Ui, area: Rect, out: &mut Out) {
             continue;
         }
         // Panel title with its expand arrow; the title opens the panel's full command list.
-        let tresp = ui.interact(title_r, title_id, Sense::click());
+        let tresp = ui.interact(title_r, title_id, Sense::click_and_drag());
         if tresp.hovered() {
             clip.rect_filled(title_r.shrink2(vec2(2.0, 1.0)), 2.0, t.control_hover.gamma_multiply(0.45));
         }
@@ -1479,6 +1479,21 @@ fn ribbon(app: &mut CadApp, ui: &mut egui::Ui, area: Rect, out: &mut Out) {
         clip.text(pos2(title_r.center().x - 6.0, title_r.center().y), Align2::CENTER_CENTER, title, label_font(), t.text_dim);
         arrow(&clip, pos2(title_r.center().x - 6.0 + tw / 2.0 + 9.0, title_r.center().y), t.text_dim);
         icons::describe_control(ui, &tresp, &panel_name(panel.title), None, false);
+        // Dragging the title tears the panel off; near the bottom edge, dock it along the bottom.
+        if tresp.drag_started() {
+            if let Some(pos) = ui.ctx().pointer_interact_pos() {
+                let width = panel_width(&p, panel, false).clamp(220.0, 900.0);
+                let rect = [pos.x - width / 2.0, pos.y - 40.0, width, 180.0];
+                let id = format!("ribbon:{}:{}", tab.name, panel.title);
+                let _ = crate::docking::command(app, false, &json!({ "operation": "open", "panel": id }));
+                let area = app.canvas.rect.unwrap_or(ui.max_rect());
+                if pos.y > area.bottom() - 24.0 {
+                    let _ = crate::docking::command(app, false, &json!({ "operation": "move", "panel": id, "target": "canvas", "zone": "bottom" }));
+                } else {
+                    let _ = crate::docking::command(app, false, &json!({ "operation": "float", "panel": id, "rect": rect }));
+                }
+            }
+        }
         // The title opens the panel's slide-out, or for a panel without one, its commands.
         let more = slide_out(tab.name, panel.title);
         egui::Popup::menu(&tresp).show(|ui| {
@@ -1894,6 +1909,20 @@ pub(crate) fn tearoff_panel_body(app: &mut CadApp, ui: &mut egui::Ui, tab: &str,
     let p = ui.painter().clone();
     let mut out = Out::default();
     let prect = ui.max_rect();
+    // Per-panel return button in the header area.
+    let t = Tokens::get();
+    let btn = Rect::from_min_size(pos2(prect.right() - 20.0, prect.top() + 2.0), vec2(16.0, 16.0));
+    let bresp = ui.interact(btn, ui.scope_id().with(("ribbon-tearoff-return", tab.name, panel.title)), Sense::click());
+    if bresp.hovered() {
+        p.rect_filled(btn.expand(2.0), 2.0, t.control_hover.gamma_multiply(0.6));
+    }
+    // Use a simple arrow icon.
+    arrow(&p, btn.center(), t.text);
+    icons::describe_control(ui, &bresp, "Return panel to ribbon", None, false);
+    if bresp.on_hover_text(crate::tl!("Return panel to ribbon")).clicked() {
+        let id = format!("ribbon:{}:{}", tab.name, panel.title);
+        let _ = crate::docking::command(app, false, &json!({"operation":"close","panel": id}));
+    }
     let top = prect.top() + 3.0;
     let body_h = (prect.height() - PANEL_TITLE).max(ROW * 3.0);
     let mut cx = prect.left() + 5.0;
