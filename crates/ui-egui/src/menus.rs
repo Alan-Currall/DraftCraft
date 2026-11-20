@@ -30,6 +30,9 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.toggle.toolsets", "Tool Sets", &[], Some("Cmd+3")),
     ("ui.panel.properties", "Properties Inspector", &["Window", "Properties Inspector"], Some("Cmd+1")),
     ("ui.panel.layers", "Layers Palette", &["Window", "Layers Palette"], None),
+    ("ui.panel.blocks", "Blocks Palette", &["Window", "Blocks Palette"], None),
+    // LT name
+    ("blockspalette", "Blocks Palette", &["Window", "Blocks Palette"], None),
     ("ui.toggle.quickcalc", "QuickCalc", &["Window", "QuickCalc"], Some("Cmd+8")),
     ("ui.panel.quickcalc", "QuickCalc", &[], None),
     ("toolpalettes", "Tool Palettes", &["Tools", "Palettes", "Tool Palettes"], None),

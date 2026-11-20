@@ -356,7 +356,7 @@ pub(crate) const TABS: &[RibbonTab] = &[
                     Small(&[
                         b(Icon::BlockEdit, "bedit", "Block Editor"),
                         b(Icon::Save, "wblock", "Write Block"),
-                        b(Icon::Blocks, "ui.dialog.blocks", "Blocks"),
+                        b(Icon::Blocks, "ui.panel.blocks", "Blocks"),
                     ]),
                 ],
             },
