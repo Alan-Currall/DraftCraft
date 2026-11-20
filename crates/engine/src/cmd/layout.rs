@@ -791,6 +791,62 @@ fn run_plot(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
         Some(n) => Space::Paper(layout_name(cmd, s.doc()?, n)?),
         None => s.space(),
     };
+    // Refresh underlay rasters to a resolution suited to this plot (PNG) before building.
+    // Use the resolved options where available (resolution, page) to estimate px-per-unit.
+    {
+        let d = s.doc()?;
+        // Page from current layout or default A4 for model, as preview does.
+        let mut page = match space.layout() {
+            Some(n) => d.layout(n).map(|l| l.page.clone()).unwrap_or_default(),
+            None => {
+                let mut page = draftcraft_doc::PageSetup::default();
+                if draftcraft_render::paper::paper_unit_mm(d) == 1.0
+                    && let Some(a4) = draftcraft_render::paper::paper_size("A4")
+                {
+                    page.paper = a4.name.into();
+                    page.width_mm = a4.width_mm;
+                    page.height_mm = a4.height_mm;
+                }
+                page
+            }
+        };
+        // Overrides from the call (`device` already resolved to width/height/margins/orientation).
+        if let Some(name) = str_param(p, "paper") {
+            if let Some(ps) = draftcraft_render::paper::paper_size(name) {
+                page.paper = ps.name.into();
+                page.width_mm = ps.width_mm;
+                page.height_mm = ps.height_mm;
+            }
+        }
+        if let Some(l) = p.get("landscape").and_then(Value::as_bool) {
+            page.landscape = l;
+        }
+        // Saved applies unless fit/scale are given explicitly (like preview).
+        let saved = if space.is_paper() && p.get("fit").is_none() && p.get("scale").is_none() {
+            draftcraft_render::paper::saved_plot(&page)
+        } else {
+            Default::default()
+        };
+        let given_scale = p.get("scale").and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0);
+        let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(matches!(space, Space::Model) || (saved.fit && given_scale.is_none()));
+        let scale = given_scale.or(saved.scale);
+        let sheet = draftcraft_render::paper::Sheet::from_page(&page, draftcraft_render::paper::page_unit_mm(d, &page));
+        let b = saved.window.unwrap_or_else(|| d.extents(&space));
+        let k = {
+            let dpi = p.get("resolution").and_then(Value::as_f64).filter(|r| r.is_finite()).unwrap_or(300.0).clamp(50.0, 2400.0);
+            sheet.unit_mm / 25.4 * dpi
+        };
+        let s_per_model = if let Some(sv) = scale.filter(|_| !fit) {
+            sv
+        } else if !fit || b.is_empty() {
+            1.0
+        } else {
+            let sfit = (sheet.printable.width() / b.width().max(1e-12)).min(sheet.printable.height() / b.height().max(1e-12));
+            if sfit.is_finite() && sfit > 0.0 { sfit } else { 1.0 }
+        };
+        let px_per_unit = k * s_per_model;
+        let _ = s.execute("pdfunderlay.refresh", &json!({ "pxPerUnit": px_per_unit, "space": match &space { Space::Model => "Model", Space::Paper(n) => n } }));
+    }
     let mut opts = if p.is_object() { p.clone() } else { json!({}) };
     if let Some(raw) = p.get("offset") {
         let values = raw
