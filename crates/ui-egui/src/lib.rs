@@ -55,6 +55,7 @@ pub mod layers;
 pub mod managers;
 pub mod menus;
 pub mod modal;
+pub mod objscale;
 pub mod opening;
 pub mod options;
 pub mod palettes;
@@ -280,6 +281,8 @@ pub struct CadApp {
     pub(crate) side_palettes: palettes::SidePalettes,
     pub cmd: cmdline::CmdLine,
     pub status: Option<(String, f64)>,
+    /// Annotation Object Scale dialog state.
+    pub objscale_dlg: Option<crate::objscale::State>,
     /// Drawings being read on worker threads ([`opening`]).
     pub opening: opening::Opening,
     pub integrated_titlebar: bool,
@@ -383,6 +386,7 @@ impl CadApp {
             side_palettes: palettes::SidePalettes::default(),
             cmd: cmdline::CmdLine::default(),
             status: None,
+            objscale_dlg: None,
             opening: opening::Opening::default(),
             integrated_titlebar: false,
             own_window_frame: false,

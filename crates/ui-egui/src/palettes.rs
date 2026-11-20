@@ -848,7 +848,13 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                 act("tablestyle", json!({ "name": n, "current": true }));
             }
         });
-        prop_row(ui, "Annotation scale", |ui| unavailable(ui, "1:1"));
+        // The current annotation scale (CANNOSCALE), from the drawing's scale list.
+        let scale_names: Vec<String> = d.scales.iter().map(|s| s.name.clone()).collect();
+        prop_row(ui, "Annotation scale", |ui| {
+            if let Some(n) = pick_menu(ui, &d.current_anno_scale().name, scale_names) {
+                act("setvar", json!({ "name": "CANNOSCALE", "value": n }));
+            }
+        });
         prop_row(ui, "Text height", |ui| {
             if let Some(f) = number(edit_field(ui, ui.scope_id().with("cur_textsize"), len(h.f64("TEXTSIZE", 0.2))), &mut bad) {
                 act("setvar", json!({ "name": "TEXTSIZE", "value": f }));
@@ -929,6 +935,51 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
         ui.painter().text(pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, crate::i18n::t(title), crate::theme::small(), t.text_dim);
     };
     group(ui, "General");
+    let mut open_objectscale_dialog = false;
+    // Annotative objects (text, MText, dimensions, multileaders, hatches, block references).
+    {
+        let ents: Vec<&draftcraft_doc::Entity> = sel.iter().filter_map(|h| d.entity(*h).map(|e| &**e)).collect();
+        if !ents.is_empty() && ents.iter().all(|e| draftcraft_doc::can_be_annotative(&e.kind)) {
+            let all = ents.iter().all(|e| draftcraft_doc::is_annotative(e));
+            let any = ents.iter().any(|e| draftcraft_doc::is_annotative(e));
+            prop_row(ui, "Annotative", |ui| {
+                let mut on = all;
+                let label = if all {
+                    "Yes"
+                } else if any {
+                    "*VARIES*"
+                } else {
+                    "No"
+                };
+                if ui.checkbox(&mut on, crate::i18n::t(label)).changed() {
+                    set = Some(json!({ "handles": ids, "annotative": on }));
+                }
+            });
+            if any {
+                // Show a compact field with current/common scale name and a [...] button that opens the dialog.
+                let lists: Vec<Vec<String>> = ents.iter().map(|e| e.common.anno_scales.iter().map(|s| s.name.clone()).collect()).collect();
+                let shown = match lists.first() {
+                    Some(l) if lists.iter().all(|x| x == l) => l.first().cloned().unwrap_or_default(),
+                    _ => "*VARIES*".to_string(),
+                };
+                prop_row(ui, "Annotative scale", |ui| {
+                    let field_id = ui.scope_id().with(("annoscale_field", &ids));
+                    let mut armed = ui.data(|m| m.get_temp::<bool>(field_id)).unwrap_or(false);
+                    let field = ui.add(egui::Button::new(shown.as_str()).frame(false).sense(egui::Sense::click()));
+                    if field.clicked() {
+                        armed = true;
+                    }
+                    if armed && ui.small_button("...").on_hover_text(crate::tl!("Annotation Object Scale List")).clicked() {
+                        armed = false;
+                        // Ask to open the dialog after this UI pass (avoids borrowing conflicts).
+                        open_objectscale_dialog = true;
+                    }
+                    ui.data_mut(|m| m.insert_temp(field_id, armed));
+                    field.on_hover_text(crate::tl!("Add or delete annotation scales of the selected objects"));
+                });
+            }
+        }
+    }
     prop_row(ui, "Color", |ui| {
         let width = (ui.available_width() - 10.0).max(0.0);
         if let Some(c) = crate::layers::color_button_resolved(
@@ -1087,7 +1138,16 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                         set = Some(json!({ "handles": ids, "text": s }));
                     }
                 });
-                num(ui, "Height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                // LT-style paper/model height rows for annotative text.
+                if draftcraft_doc::is_annotative(&e) {
+                    let f = d.current_anno_scale().factor();
+                    num(ui, "Paper text height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                    prop_row(ui, "Model text height", |ui| {
+                        read_only(ui, &len(tx.height * f));
+                    });
+                } else {
+                    num(ui, "Height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                }
                 num(ui, "Rotation", "rotation", real(angles.shown(tx.rotation).to_degrees()), &mut set, &mut bad, &ids);
                 num(ui, "Width factor", "widthFactor", real(tx.width_factor), &mut set, &mut bad, &ids);
             }
@@ -1097,7 +1157,15 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                         set = Some(json!({ "handles": ids, "text": s }));
                     }
                 });
-                num(ui, "Text height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                if draftcraft_doc::is_annotative(&e) {
+                    let f = d.current_anno_scale().factor();
+                    num(ui, "Paper text height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                    prop_row(ui, "Model text height", |ui| {
+                        read_only(ui, &len(tx.height * f));
+                    });
+                } else {
+                    num(ui, "Text height", "height", len(tx.height), &mut set, &mut bad, &ids);
+                }
                 num(ui, "Defined width", "width", len(tx.width), &mut set, &mut bad, &ids);
             }
             EntityKind::LwPolyline(pl) => {
@@ -1147,7 +1215,15 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                 // The style's values with this dimension's own overrides; editing one overrides
                 // it for the selected dimensions, as AutoCAD's Properties palette does.
                 let st = d.dim_style(&dm.style).cloned().unwrap_or_default().with_overrides(&dm.overrides);
-                num(ui, "Text height", "textHeight", len(st.text_height), &mut set, &mut bad, &ids);
+                if draftcraft_doc::is_annotative(&e) {
+                    let f = d.current_anno_scale().factor();
+                    num(ui, "Paper text height", "textHeight", len(st.text_height), &mut set, &mut bad, &ids);
+                    prop_row(ui, "Model text height", |ui| {
+                        read_only(ui, &len(st.text_height * f));
+                    });
+                } else {
+                    num(ui, "Text height", "textHeight", len(st.text_height), &mut set, &mut bad, &ids);
+                }
                 num(ui, "Arrow size", "arrowSize", len(st.arrow_size), &mut set, &mut bad, &ids);
                 num(ui, "Dim scale overall", "dimScale", real(st.scale), &mut set, &mut bad, &ids);
                 prop_row(ui, "Precision", |ui| {
@@ -1156,6 +1232,19 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
                         set = Some(json!({ "handles": ids, "precision": n }));
                     }
                 });
+            }
+            EntityKind::MLeader(m) => {
+                if let Some(t) = &m.text {
+                    if draftcraft_doc::is_annotative(&e) {
+                        let f = d.current_anno_scale().factor();
+                        num(ui, "Paper text height", "height", len(t.height), &mut set, &mut bad, &ids);
+                        prop_row(ui, "Model text height", |ui| {
+                            read_only(ui, &len(t.height * f));
+                        });
+                    } else {
+                        num(ui, "Text height", "height", len(t.height), &mut set, &mut bad, &ids);
+                    }
+                }
             }
             EntityKind::Insert(i) => {
                 // A dynamic block reference shows its dynamic block's name, not its anonymous
@@ -1213,6 +1302,9 @@ pub(crate) fn properties_section(app: &mut CadApp, ui: &mut egui::Ui) {
         let _ = app.run("properties.set", p);
     }
     report_bad(app, bad);
+    if open_objectscale_dialog {
+        let _ = app.run("ui.objectscale.dialog", json!({}));
+    }
     if let Some(p) = custom_set {
         let _ = app.run("blocks.reference.set", p);
     }
