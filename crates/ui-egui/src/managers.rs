@@ -1009,11 +1009,17 @@ fn plot(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                     "pagesetup",
                     json!({
                         "layout": st.target,
+                        // Carry the chosen device (or \"None\") so the layout keeps its plotter/printer.
+                        "device": device_label(page),
                         "paper": page.paper,
                         "landscape": page.landscape,
                         "scaleToFit": page.scale_to_fit,
+                        // Retain a non-default numeric scale too when fit is off.
+                        "scale": page.scale,
+                        // Plot options saved on the layout's page setup.
                         "lineweights": page.lineweights,
                         "plotTransparency": page.plot_transparency,
+                        "plotStyleTable": if draftcraft_doc::no_plot_style_table(&page.plot_style_table) { Value::String("None".into()) } else { Value::String(page.plot_style_table.clone()) },
                     }),
                 ));
             }
