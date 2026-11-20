@@ -63,6 +63,9 @@ pub struct Values {
     pub separate: bool,
     pub island: i64,
     pub origin: i64,
+    pub annotative: bool,
+    pub trans: i64,
+    pub bg_index: i64,
 }
 
 pub fn values(app: &CadApp) -> Values {
@@ -76,6 +79,9 @@ pub fn values(app: &CadApp) -> Values {
             separate: false,
             island: 0,
             origin: 0,
+            annotative: false,
+            trans: -1,
+            bg_index: -1,
         };
     };
     let h = &d.header;
@@ -96,6 +102,9 @@ pub fn values(app: &CadApp) -> Values {
         separate: h.i64("HPSEPARATE", 0) != 0,
         island: h.i64("HPISLANDDETECTION", 0),
         origin: h.i64("HPORIGINMODE", 0),
+        annotative: h.i64("HPANNOTATIVE", 0) != 0,
+        trans: h.i64("CETRANSPARENCY", -1),
+        bg_index: h.i64("HPBACKGROUNDCOLOR", -1),
     }
 }
 
@@ -315,6 +324,55 @@ pub fn show(app: &mut CadApp, ctx: &egui::Context, area: egui::Rect) {
                                     }
                                 }
                                 ui.separator();
+                        // Annotative toggle
+                        let mut ann = v.annotative;
+                        if ui.checkbox(&mut ann, crate::tl!("Annotative")).changed() {
+                            actions.push(Action::Set("HPANNOTATIVE", json!(i64::from(ann))));
+                        }
+                        ui.separator();
+                        // Transparency
+                        ui.label(egui::RichText::new(crate::tl!("Transparency")).color(t.text_dim));
+                        let mut bylayer = v.trans == -1;
+                        let mut byblock = v.trans == -2;
+                        if ui.radio(bylayer, crate::tl!("ByLayer")).clicked() {
+                            actions.push(Action::Set("CETRANSPARENCY", json!(-1)));
+                        }
+                        if ui.radio(byblock, crate::tl!("ByBlock")).clicked() {
+                            actions.push(Action::Set("CETRANSPARENCY", json!(-2)));
+                        }
+                        let mut pct = if v.trans >= 0 { v.trans as f64 } else { 0.0 };
+                        ui.add_enabled_ui(!bylayer && !byblock, |ui| {
+                            let r = ui.add(egui::Slider::new(&mut pct, 0.0..=90.0).text("%"));
+                            if r.changed() {
+                                actions.push(Action::Set("CETRANSPARENCY", json!(pct.round() as i64)));
+                            }
+                        });
+                        ui.separator();
+                        // Background colour for hatch
+                        ui.label(egui::RichText::new(crate::tl!("Background")).color(t.text_dim));
+                        let bg_label = if v.bg_index < 0 { crate::tl!("None").to_string() } else { crate::i18n::t(&color_label(&v.bg_index.to_string())).to_string() };
+                        let resp_bg = ui.button(format!("{bg} ▾", bg = bg_label));
+                        egui::Popup::from_toggle_button_response(&resp_bg)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                if ui.selectable_label(v.bg_index < 0, crate::tl!("None")).clicked() {
+                                    actions.push(Action::Set("HPBACKGROUNDCOLOR", json!(-1)));
+                                    ui.close();
+                                }
+                                for (k, n) in COLORS {
+                                    if k == "." { continue; }
+                                    if let Ok(aci) = k.parse::<i64>() {
+                                        ui.horizontal(|ui| {
+                                            swatch(ui, color32(app, k));
+                                            if ui.selectable_label(v.bg_index == aci, crate::i18n::t(n)).clicked() {
+                                                actions.push(Action::Set("HPBACKGROUNDCOLOR", json!(aci)));
+                                                ui.close();
+                                            }
+                                        });
+                                    }
+                                }
+                            });
+                        ui.separator();
                                 if ui.button(crate::tl!("Hatch and Gradient dialog…")).clicked() {
                                     actions.push(Action::Dialog);
                                     ui.close();

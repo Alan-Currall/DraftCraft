@@ -16,8 +16,6 @@ fn app_with_rect() -> CadApp {
 #[test]
 fn bar_is_shown_during_interactive_hatch_and_goes_away() {
     let mut app = app_with_rect();
-    // Keep the command line (no dialog) so HATCH runs interactively.
-    app.run("setvar", json!({ "name": "HPDLGMODE", "value": 0 })).unwrap();
     // Start HATCH and assert the bar shows.
     app.start("hatch");
     assert!(crate::hatchbar::shown(&app));
@@ -35,7 +33,6 @@ fn bar_is_shown_during_interactive_hatch_and_goes_away() {
 #[test]
 fn bar_changes_flow_into_created_hatch() {
     let mut app = app_with_rect();
-    app.run("setvar", json!({ "name": "HPDLGMODE", "value": 0 })).unwrap();
     app.start("hatch");
     // Set pattern, scale and angle from the bar (driven through HP* vars).
     crate::hatchbar::apply(&mut app, crate::hatchbar::Action::Set("HPNAME", json!("AR-CONC")));
@@ -49,5 +46,30 @@ fn bar_changes_flow_into_created_hatch() {
     assert_eq!(h.pattern, "AR-CONC");
     assert!((h.scale - 0.5).abs() < 1e-9);
     assert!((h.angle - 30f64.to_radians()).abs() < 1e-9);
+}
+
+#[test]
+fn transparency_annotative_and_background_flow_into_created_hatch() {
+    let mut app = app_with_rect();
+    app.start("hatch");
+    // Transparency 40%, annotative on, background Blue (5)
+    cadcraft_ui_egui::hatchbar::apply(app.state_mut(), cadcraft_ui_egui::hatchbar::Action::Set("CETRANSPARENCY", json!(40)));
+    cadcraft_ui_egui::hatchbar::apply(app.state_mut(), cadcraft_ui_egui::hatchbar::Action::Set("HPANNOTATIVE", json!(1)));
+    cadcraft_ui_egui::hatchbar::apply(app.state_mut(), cadcraft_ui_egui::hatchbar::Action::Set("HPBACKGROUNDCOLOR", json!(5)));
+    // Pick and finish.
+    app.session.input(Input::Point(Vec2::new(50.0, 25.0))).unwrap();
+    cadcraft_ui_egui::hatchbar::apply(app.state_mut(), cadcraft_ui_egui::hatchbar::Action::Done);
+    let d = app.session.doc().unwrap();
+    let e = d.model.iter().find(|e| matches!(e.kind, EntityKind::Hatch(_))).unwrap();
+    // Transparency in common
+    assert_eq!(e.common.transparency, draftcraft_doc::Transparency::Percent(40));
+    // Annotative: new hatch supports current scale
+    assert!(!e.common.anno_scales.is_empty(), "annotative hatch supports a scale");
+    // Background colour index 5
+    if let EntityKind::Hatch(h) = &e.kind {
+        assert_eq!(h.background, Some(draftcraft_color::Color::Index(5)));
+    } else {
+        panic!("expected hatch");
+    }
 }
 

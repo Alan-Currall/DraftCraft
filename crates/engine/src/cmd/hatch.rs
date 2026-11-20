@@ -287,6 +287,7 @@ struct HatchSettings {
     angle: f64,
     gradient: Option<Gradient>,
     associative: bool,
+    background: Option<Color>,
     /// HPSEPARATE: one hatch per picked point or selected object.
     separate: bool,
     origin: Vec2,
@@ -301,6 +302,8 @@ impl HatchSettings {
             1.0,
             0.0,
         ));
+        let bg_idx = s.doc().map_or(-1, |d| d.header.i64("HPBACKGROUNDCOLOR", -1));
+        let background = (0..=256).contains(&bg_idx).then(|| Color::from_aci(bg_idx as i16));
         let pattern = str_param(p, "pattern").map(str::to_ascii_uppercase).unwrap_or(hdr.0);
         let g = gradient.then(|| Gradient {
             name: str_param(p, "name").and_then(gradient_name).unwrap_or("LINEAR").to_string(),
@@ -315,6 +318,7 @@ impl HatchSettings {
             angle: p.get("angle").and_then(Value::as_f64).map(f64::to_radians).unwrap_or(hdr.2),
             gradient: g,
             associative: bool_or(p, "associative", s.doc().map_or(true, |d| d.header.i64("HPASSOC", 1) != 0)),
+            background,
             separate: bool_or(p, "separate", s.doc().is_ok_and(|d| d.header.i64("HPSEPARATE", 0) != 0)),
             origin: point_param(p, "origin").filter(|o| o.is_finite()).unwrap_or_else(|| {
                 s.doc().ok().and_then(|d| d.header.point("HPORIGIN")).map(|o| o.xy()).filter(|o| o.is_finite()).unwrap_or(Vec2::ZERO)
@@ -347,7 +351,7 @@ impl HatchSettings {
             style: self.style,
             elevation: 0.0,
             gradient: self.gradient.clone(),
-            background: None,
+            background: self.background,
             pattern_lines: patfile::lines_for(&self.pattern),
         })
     }

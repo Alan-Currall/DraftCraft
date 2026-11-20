@@ -266,11 +266,12 @@ impl Session {
         }
     }
 
-    /// Common properties for new objects (CLAYER, CECOLOR, CELTYPE, CELWEIGHT, CELTSCALE).
+    /// Common properties for new objects (CLAYER, CECOLOR, CELTYPE, CELWEIGHT, CELTSCALE,
+    /// optional CETRANSPARENCY).
     pub fn current_common(&self) -> Common {
         let Ok(d) = self.doc() else { return Common::default() };
         let h = &d.header;
-        Common {
+        let mut common = Common {
             layer: h.str("CLAYER", "0"),
             color: draftcraft_color::Color::from_aci(h.i64("CECOLOR", 256) as i16),
             linetype: h.str("CELTYPE", "ByLayer"),
@@ -278,7 +279,14 @@ impl Session {
             ltscale: h.f64("CELTSCALE", 1.0),
             plot_style: h.str("CPLOTSTYLE", "ByLayer"),
             ..Common::default()
+        };
+        match h.i64("CETRANSPARENCY", i64::MIN) {
+            -1 => {} // ByLayer
+            -2 => common.transparency = draftcraft_doc::Transparency::ByBlock,
+            p if (0..=90).contains(&p) => common.transparency = draftcraft_doc::Transparency::Percent(p as u8),
+            _ => {}
         }
+        common
     }
 
     /// Add an entity to the current space with current properties.
