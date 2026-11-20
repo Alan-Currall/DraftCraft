@@ -13,6 +13,7 @@ How to write it (see AGENTS.md):
 
 ### Fixed
 - HATCH spline-edge boundaries are preserved through DXF and DWG load/save and render correctly (no conversion to straight segments).
+- Annotative objects keep their authored scale: text, dimensions and multileaders now record and apply the base annotation scale so sizes match on load, display and save.
 
 ## 2.2.2
 

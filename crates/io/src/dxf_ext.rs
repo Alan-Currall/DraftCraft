@@ -804,6 +804,8 @@ pub(crate) struct AnnoPayload {
 struct AnnoObject {
     handle: String,
     scales: Vec<draftcraft_doc::AnnoScale>,
+    #[serde(default)]
+    authored: Option<f64>,
 }
 
 /// Most annotative objects read from one file.
@@ -820,7 +822,7 @@ pub(crate) fn anno_chunks(d: &draftcraft_doc::Drawing) -> Option<Vec<String>> {
         .iter()
         .chain(d.layouts.iter().flat_map(|l| l.entities.iter()))
         .filter(|e| draftcraft_doc::is_annotative(e))
-        .map(|e| AnnoObject { handle: e.handle.hex(), scales: e.common.anno_scales.clone() })
+        .map(|e| AnnoObject { handle: e.handle.hex(), scales: e.common.anno_scales.clone(), authored: e.common.anno_authored })
         .collect();
     if cannoscale == "1:1" && annoallvisible == 1 && blocks.is_empty() && objects.is_empty() {
         return None;
@@ -866,6 +868,7 @@ pub(crate) fn apply_anno(d: &mut draftcraft_doc::Drawing, p: AnnoPayload) {
         let _ = d.modify_entity(h, |e| {
             if draftcraft_doc::can_be_annotative(&e.kind) {
                 e.common.anno_scales = scales;
+                e.common.anno_authored = o.authored.filter(|a| a.is_finite() && *a > 0.0);
             }
         });
     }

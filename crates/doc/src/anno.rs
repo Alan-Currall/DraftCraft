@@ -152,7 +152,9 @@ pub fn anno_draw(e: &Entity, view: f64, all_visible: bool) -> AnnoDraw {
 /// attributes) multiplied by `f`. A dimension is drawn from its definition at that scale, not
 /// from a stored geometry block. Other kinds come back unchanged.
 pub fn anno_scaled(e: &Entity, f: f64) -> Entity {
-    let f = if f.is_finite() && f > 0.0 { f } else { 1.0 };
+    let view = if f.is_finite() && f > 0.0 { f } else { 1.0 };
+    let authored = e.common.anno_authored.filter(|a| a.is_finite() && *a > 0.0).unwrap_or(1.0);
+    let f = view / authored;
     let mut out = e.clone();
     match &mut out.kind {
         EntityKind::Text(t) => t.height *= f,

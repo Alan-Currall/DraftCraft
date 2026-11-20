@@ -227,7 +227,22 @@ impl Objects {
         self.apply_table_styles(d);
         self.apply_table_style_fixes(d, rx);
         apply_scales(d, &self.scales);
+        let had_anno = self.xrecord_text(crate::dxf_ext::ANNOTATION_KEY).is_some();
         apply_own_records(d, &|key| self.xrecord_text(key));
+        // Files without our annotation record: assume authored at the current annotation scale.
+        if !had_anno {
+            let authored = d.current_anno_scale().factor();
+            let hs: Vec<Handle> = d
+                .model
+                .iter()
+                .chain(d.layouts.iter().flat_map(|l| l.entities.iter()))
+                .filter(|e| draftcraft_doc::is_annotative(e))
+                .map(|e| e.handle)
+                .collect();
+            for h in hs {
+                let _ = d.modify_entity(h, |e| e.common.anno_authored = Some(authored));
+            }
+        }
         self.apply_mleader_styles(d, rx);
         crate::dxf_mleader::apply(d, &rx.mleader_fix, &self.names);
         for (name, view) in &self.layout_views {
