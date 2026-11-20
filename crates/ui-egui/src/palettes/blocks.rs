@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use draftcraft_engine::doc::{Block, Drawing, Entity};
-use draftcraft_geom::{Bounds2, Vec2};
+use draftcraft_engine::doc::{Block, Drawing};
+use draftcraft_geom::Vec2;
 use draftcraft_render::DisplayList;
 use egui::{Rect, vec2};
 use serde::{Deserialize, Serialize};
@@ -193,34 +193,19 @@ fn tile(ui: &mut egui::Ui, name: &str, list: &DisplayList, selected: bool) -> bo
     p.rect_filled(rect, 3.0, if selected { t.control_hover } else { t.control });
     // Thumbnail rect
     let thumb = Rect::from_min_size(rect.min + vec2(2.0, 2.0), vec2(w - 4.0, h - 4.0));
-    // Fit list.bounds into thumb with small margin.
-    let bounds = if list.bounds.is_empty() { Bounds2::from_points([Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0)]) } else { list.bounds };
-    // Draw primitives (wireframe preview) in app theme's text colour.
-    let color = t.text;
-    let to_screen = {
-        let s = (thumb.width() / bounds.width()).min(thumb.height() / bounds.height()) * 0.9;
-        let center = Vec2::new((thumb.left() + thumb.right()) as f64 / 2.0, (thumb.top() + thumb.bottom()) as f64 / 2.0);
-        let view_center = bounds.center();
-        let dx = center.x - view_center.x * s;
-        let dy = center.y + view_center.y * s;
-        move |v: Vec2| egui::pos2((dx + v.x * s) as f32, (dy - v.y * s) as f32)
-    };
-    for prim in &list.prims {
-        match prim.kind {
-            draftcraft_render::Kind::Line(a, b) => {
-                p.line_segment([to_screen(a), to_screen(b)], egui::Stroke::new(1.0, color));
-            }
-            draftcraft_render::Kind::Tri(_, _, _) => {
-                // Keep a wireframe look: draw triangle edges only.
-                let a = prim.tri[0];
-                let b = prim.tri[1];
-                let c = prim.tri[2];
-                p.line_segment([to_screen(a), to_screen(b)], egui::Stroke::new(1.0, color));
-                p.line_segment([to_screen(b), to_screen(c)], egui::Stroke::new(1.0, color));
-                p.line_segment([to_screen(c), to_screen(a)], egui::Stroke::new(1.0, color));
-            }
-            _ => {}
-        }
+    // Draw the display list fitted into the thumbnail, as the canvas does.
+    if !list.bounds.is_empty() && !list.prims.is_empty() {
+        let b = list.bounds;
+        let inner = thumb.shrink(6.0);
+        let (iw, ih) = (f64::from(inner.width()).max(1e-9), f64::from(inner.height()).max(1e-9));
+        let scale = (iw / b.width()).min(ih / b.height()) * 0.95;
+        let xf = crate::canvas::Xf {
+            rect: inner,
+            center: Vec2::new((b.min.x + b.max.x) / 2.0, (b.min.y + b.max.y) / 2.0),
+            scale,
+            twist: 0.0,
+        };
+        crate::canvas::draw_list(&p, &xf, list, draftcraft_color::Rgb(t.panel.r(), t.panel.g(), t.panel.b()), false);
     }
     // Label
     p.text(egui::pos2(rect.center().x, rect.bottom() - label_h / 2.0 - 2.0), egui::Align2::CENTER_CENTER, name, crate::theme::small(), t.text);
@@ -237,7 +222,6 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let mut st = std::mem::take(&mut app.side_palettes.blocks);
     let mut start_insert_interactive: Option<(String, Option<String>, bool)> = None; // (name, file, explode)
-    let mut run_insert_now: Option<Value> = None;
 
     ui.add_space(6.0);
     ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
@@ -340,10 +324,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         }
     }
 
-    // Execute insert action
-    if let Some(p) = run_insert_now {
-        let _ = app.run("insert", &p);
-    }
+    // Execute interactive insert action
     if let Some((name, file, explode)) = start_insert_interactive {
         // If this came from a library and the block isn't defined yet, copy it first.
         if let Some(f) = &file
@@ -400,6 +381,7 @@ fn libraries_body(app: &mut CadApp, ui: &mut egui::Ui, st: &mut State, start_ins
         });
         return;
     }
+    let mut add_recent: Vec<String> = Vec::new();
     egui::ScrollArea::vertical().id_salt("blocks-library").auto_shrink([false, false]).show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
@@ -415,16 +397,20 @@ fn libraries_body(app: &mut CadApp, ui: &mut egui::Ui, st: &mut State, start_ins
                 if resp.clicked() {
                     // Copy into drawing, then interactive insert.
                     *start_insert_interactive = Some((name.clone(), Some(st.lib.path.clone()), app.ui.blocks_explode));
-                    // Recent
-                    st.record_recent(name, Some(&st.lib.path));
+                    // Defer recording recent to avoid mutating while iterating.
+                    add_recent.push(name.clone());
                 }
             }
         });
     });
+    let lib_path = st.lib.path.clone();
+    for n in add_recent {
+        st.record_recent(&n, Some(&lib_path));
+    }
 }
 
 fn load_listing(app: &mut CadApp, st: &mut State, path: &str) {
-    match app.run("adcenter", &json!({ "path": path })) {
+    match app.run("adcenter", json!({ "path": path })) {
         Ok(v) => {
             let blocks: Vec<(String, usize)> = v
                 .get("blocks")
