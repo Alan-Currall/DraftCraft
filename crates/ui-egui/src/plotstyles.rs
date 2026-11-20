@@ -87,6 +87,16 @@ fn window(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
             if ui.button(crate::tl!("New STB")).clicked() {
                 action = Some(("stylesmanager", json!({ "action": "new", "name": "new.stb" })));
             }
+            if ui.button(crate::tl!("Browse…")).on_hover_text(crate::tl!("Add a .ctb/.stb/.json file to your plot styles folder")).clicked() {
+                if let Some(p) = app.services.pick_open.as_ref().and_then(|f| f()) {
+                    let _ = app.run("stylesmanager.import", json!({ "path": p }));
+                    // Refresh the list after importing.
+                    let _ = app.run("stylesmanager.reload", json!({}));
+                }
+            }
+            if ui.button(crate::tl!("Reload")).on_hover_text(crate::tl!("Re-read your plot styles folder")).clicked() {
+                let _ = app.run("stylesmanager.reload", json!({}));
+            }
             if ui.add_enabled(in_drawing, egui::Button::new(crate::tl!("Delete"))).clicked() {
                 action = Some(("stylesmanager", json!({ "action": "delete", "name": sel })));
             }

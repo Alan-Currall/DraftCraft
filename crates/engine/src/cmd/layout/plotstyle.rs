@@ -12,7 +12,7 @@ use super::super::targets;
 use super::{CommandSpec, Result, Session, bad, str_param};
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut v = vec![
         CommandSpec::new("plotstyle", "Plot Style...", run_plotstyle)
             .menu(&["Format", "Plot Style..."])
             .params(
@@ -23,7 +23,10 @@ pub fn specs() -> Vec<CommandSpec> {
             .params(
                 "{action?: list (default)|get|new|set|delete|load|save, name?: table (\"x.ctb\"/\"x.stb\"), kind?: colorDependent|named (new), from?: table to copy (new), description?, style?: {name, color?: \"#rrggbb\"|null, grayscale?, screening?: 0-100, linetype?: name|null, lineweight?: mm|null, end?, join?, fill?, description?} (set), removeStyle?: name (set, named tables), path? (load/save; save without one returns `text`), text? (load)}",
             ),
-    ]
+    ];
+    // User-plot-styles helper commands (import/reload)
+    v.extend(super::super::plotstyles::specs());
+    v
 }
 
 // ---------- PLOTSTYLE ----------
@@ -93,8 +96,21 @@ fn run_plotstyle(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------- STYLESMANAGER ----------
 
-fn table_summary(d: &Drawing, t: &PlotStyleTable) -> Value {
+fn table_summary(d: &Drawing, t: &PlotStyleTable, drawing_dir: Option<&std::path::Path>) -> Value {
     let in_drawing = d.plot_style_tables.iter().any(|x| x.name.eq_ignore_ascii_case(&t.name));
+    let source = if in_drawing {
+        "drawing"
+    } else if super::super::plotstyles::resolve_path(&t.name)
+        .and_then(|p| p.parent().map(|pp| pp.to_path_buf()))
+        .zip(drawing_dir.map(|p| p.to_path_buf()))
+        .is_some_and(|(a, b)| a == b)
+    {
+        "drawingFolder"
+    } else if super::super::plotstyles::resolve_path(&t.name).is_some() {
+        "user"
+    } else {
+        "builtin"
+    };
     json!({
         "name": t.name,
         "description": t.description,
@@ -102,6 +118,7 @@ fn table_summary(d: &Drawing, t: &PlotStyleTable) -> Value {
         "styles": t.styles.len(),
         "inDrawing": in_drawing,
         "builtin": PlotStyleTable::builtin(&t.name).is_some() && !in_drawing,
+        "source": source,
     })
 }
 
@@ -193,20 +210,25 @@ fn run_stylesmanager(s: &mut Session, p: &Value) -> Result<Value> {
     match action.as_str() {
         "list" => {
             let d = s.doc()?;
+            let draw_dir = s.state().ok().and_then(|st| st.path.as_deref()).and_then(|p| std::path::Path::new(p).parent().map(|pp| pp.to_path_buf()));
+            super::super::plotstyles::set_current_drawing_dir(draw_dir.as_deref());
+            // Names include drawing, user folder and built-ins (provider is registered).
             let tables: Vec<Value> = draftcraft_doc::plot_style_table_names(d)
                 .iter()
                 .filter_map(|n| draftcraft_doc::plot_style_table(d, n))
-                .map(|t| table_summary(d, &t))
+                .map(|t| table_summary(d, &t, draw_dir.as_deref()))
                 .collect();
             Ok(json!({ "tables": tables }))
         }
         "get" => {
             let d = s.doc()?;
             let t = find_table(cmd, d, &table_name(cmd, p)?)?;
+            let draw_dir = s.state().ok().and_then(|st| st.path.as_deref()).and_then(|p| std::path::Path::new(p).parent().map(|pp| pp.to_path_buf()));
             let mut v = serde_json::to_value(&t).unwrap_or(Value::Null);
-            if let (Some(o), Value::Object(sum)) = (v.as_object_mut(), table_summary(d, &t)) {
+            if let (Some(o), Value::Object(sum)) = (v.as_object_mut(), table_summary(d, &t, draw_dir.as_deref())) {
                 o.insert("inDrawing".into(), sum.get("inDrawing").cloned().unwrap_or(Value::Null));
                 o.insert("builtin".into(), sum.get("builtin").cloned().unwrap_or(Value::Null));
+                o.insert("source".into(), sum.get("source").cloned().unwrap_or(Value::Null));
             }
             Ok(v)
         }
@@ -241,7 +263,8 @@ fn run_stylesmanager(s: &mut Session, p: &Value) -> Result<Value> {
                 t.description = desc.chars().take(255).collect();
             }
             let t = t.sanitized();
-            let out = table_summary(d, &t);
+            let draw_dir = s.state().ok().and_then(|st| st.path.as_deref()).and_then(|p| std::path::Path::new(p).parent().map(|pp| pp.to_path_buf()));
+            let out = table_summary(d, &t, draw_dir.as_deref());
             store(s.doc_mut()?, t);
             Ok(out)
         }
@@ -321,7 +344,8 @@ fn run_stylesmanager(s: &mut Session, p: &Value) -> Result<Value> {
             if t.name.is_empty() {
                 return Err(bad(cmd, "the table has no name: pass `name`"));
             }
-            let out = table_summary(s.doc()?, &t);
+            let draw_dir = s.state().ok().and_then(|st| st.path.as_deref()).and_then(|p| std::path::Path::new(p).parent().map(|pp| pp.to_path_buf()));
+            let out = table_summary(s.doc()?, &t, draw_dir.as_deref());
             store(s.doc_mut()?, t);
             Ok(out)
         }

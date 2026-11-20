@@ -16,6 +16,7 @@
 
 use draftcraft_color::Rgb;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// Built-in colour-dependent table that prints objects with their own properties.
 pub const DEFAULT_CTB: &str = "default.ctb";
@@ -45,6 +46,28 @@ const FILE_VERSION: u64 = 1;
 
 /// Number of styles in a colour-dependent table (one per index colour 1..=255).
 pub const CTB_STYLES: usize = 255;
+
+/// Provider for external plot style tables (e.g. user-installed `.ctb`/`.stb` files).
+/// The engine (or a host) may register one at startup. When present, it augments the
+/// drawing and built-in lists and serves tables by name.
+#[derive(Clone, Copy)]
+pub struct PlotStyleProvider {
+    /// All available external table names (e.g. filenames), case-insensitive.
+    pub list_names: fn() -> Vec<String>,
+    /// Resolve one table by name. Case-insensitive match is expected inside.
+    pub get_by_name: fn(&str) -> Option<PlotStyleTable>,
+}
+
+static EXTERNAL_PROVIDER: OnceLock<PlotStyleProvider> = OnceLock::new();
+
+/// Install the external plot style provider. The first call wins.
+pub fn set_plot_style_provider(provider: PlotStyleProvider) {
+    let _ = EXTERNAL_PROVIDER.set(provider);
+}
+
+fn provider() -> Option<&'static PlotStyleProvider> {
+    EXTERNAL_PROVIDER.get()
+}
 
 /// Line end style of a plot style.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,13 +409,32 @@ pub fn plot_style_table(d: &crate::Drawing, name: &str) -> Option<PlotStyleTable
         return None;
     }
     let n = name.trim();
-    d.plot_style_tables.iter().find(|t| t.name.eq_ignore_ascii_case(n)).cloned().or_else(|| PlotStyleTable::builtin(n))
+    // In-drawing tables have priority.
+    if let Some(t) = d.plot_style_tables.iter().find(|t| t.name.eq_ignore_ascii_case(n)).cloned() {
+        return Some(t);
+    }
+    // External provider (user folder, etc.) next.
+    if let Some(p) = provider() {
+        if let Some(t) = (p.get_by_name)(n) {
+            return Some(t);
+        }
+    }
+    // Then built-ins.
+    PlotStyleTable::builtin(n)
 }
 
 /// The names of every table a drawing can use: its own, then the built-in ones it doesn't
 /// shadow.
 pub fn plot_style_table_names(d: &crate::Drawing) -> Vec<String> {
     let mut v: Vec<String> = d.plot_style_tables.iter().map(|t| t.name.clone()).collect();
+    // External provider names that don't shadow drawing ones.
+    if let Some(p) = provider() {
+        for n in (p.list_names)() {
+            if !v.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+                v.push(n);
+            }
+        }
+    }
     for b in BUILTIN_PLOT_STYLE_TABLES {
         if !v.iter().any(|n| n.eq_ignore_ascii_case(b)) {
             v.push((*b).to_string());

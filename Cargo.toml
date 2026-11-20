@@ -11,6 +11,7 @@ rust-version = "1.95"
 repository = "https://github.com/DraftCraft-DEV/DraftCraft"
 
 [workspace.dependencies]
+tempfile = "3.10"
 # internal
 draftcraft-geom = { path = "crates/geom" }
 draftcraft-dxf = { path = "crates/dxf" }
