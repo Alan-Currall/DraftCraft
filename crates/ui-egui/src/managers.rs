@@ -8,9 +8,9 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use draftcraft_color::Color as DcColor;
 use egui::{RichText, Sense, Stroke, vec2};
 use serde_json::{Value, json};
-use draftcraft_color::Color as DcColor;
 
 use crate::CadApp;
 use crate::parametric::expr_field;
@@ -594,21 +594,17 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
             let [left, right] = cols else { return };
             // Left: list and actions
             left.label(RichText::new("Styles").strong());
-            egui::ScrollArea::vertical()
-                .id_salt(("dimstyle", "list"))
-                .max_height(220.0)
-                .auto_shrink([false, true])
-                .show(left, |ui| {
-                    for s in &styles {
-                        let mut label = RichText::new(&s.name);
-                        if s.name.eq_ignore_ascii_case(&current) {
-                            label = label.strong();
-                        }
-                        if ui.selectable_label(s.name == sel, label).clicked() {
-                            sel = s.name.clone();
-                        }
+            egui::ScrollArea::vertical().id_salt(("dimstyle", "list")).max_height(220.0).auto_shrink([false, true]).show(left, |ui| {
+                for s in &styles {
+                    let mut label = RichText::new(&s.name);
+                    if s.name.eq_ignore_ascii_case(&current) {
+                        label = label.strong();
                     }
-                });
+                    if ui.selectable_label(s.name == sel, label).clicked() {
+                        sel = s.name.clone();
+                    }
+                }
+            });
             left.horizontal(|ui| {
                 let is_current = sel.eq_ignore_ascii_case(&current);
                 if ui.add_enabled(!is_current, egui::Button::new("Set Current")).clicked() {
@@ -719,7 +715,8 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         }
                         ui.end_row();
                         // Linetypes
-                        let lt_names: Vec<String> = std::iter::once("ByLayer".to_string()).chain(d.linetypes.iter().map(|l| l.name.clone())).collect();
+                        let lt_names: Vec<String> =
+                            std::iter::once("ByLayer".to_string()).chain(d.linetypes.iter().map(|l| l.name.clone())).collect();
                         if let Some(n) = linetype_picker(ui, ("dimstyle", "lt_dim"), "Dim linetype (DIMLTYPE)", &cur.dim_linetype, &lt_names) {
                             action = Some(("dimstyle", json!({ "name": sel, "dimLinetype": n, "current": false })));
                         }
@@ -747,30 +744,32 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         // Lineweights
                         ui.label("Dim lineweight");
                         let mut picked_dl = None;
-                        craft_ui::ComboBox::from_id_salt(("dimstyle", "dlw"))
-                            .selected_text(lweight_name(cur.dim_lineweight as i64))
-                            .show_ui(ui, |ui| {
+                        craft_ui::ComboBox::from_id_salt(("dimstyle", "dlw")).selected_text(lweight_name(cur.dim_lineweight as i64)).show_ui(
+                            ui,
+                            |ui| {
                                 for code in LWEIGHTS {
                                     if ui.selectable_label(*code == cur.dim_lineweight as i64, crate::i18n::t(&lweight_name(*code))).clicked() {
                                         picked_dl = Some(*code);
                                     }
                                 }
-                            });
+                            },
+                        );
                         if let Some(code) = picked_dl {
                             action = Some(("dimstyle", json!({ "name": sel, "dimLineweight": code, "current": false })));
                         }
                         ui.end_row();
                         ui.label("Ext lineweight");
                         let mut picked_el = None;
-                        craft_ui::ComboBox::from_id_salt(("dimstyle", "elw"))
-                            .selected_text(lweight_name(cur.ext_lineweight as i64))
-                            .show_ui(ui, |ui| {
+                        craft_ui::ComboBox::from_id_salt(("dimstyle", "elw")).selected_text(lweight_name(cur.ext_lineweight as i64)).show_ui(
+                            ui,
+                            |ui| {
                                 for code in LWEIGHTS {
                                     if ui.selectable_label(*code == cur.ext_lineweight as i64, crate::i18n::t(&lweight_name(*code))).clicked() {
                                         picked_el = Some(*code);
                                     }
                                 }
-                            });
+                            },
+                        );
                         if let Some(code) = picked_el {
                             action = Some(("dimstyle", json!({ "name": sel, "extLineweight": code, "current": false })));
                         }
@@ -907,15 +906,13 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                         }
                         ui.label("Text style (DIMTXSTY)");
                         let mut picked = None;
-                        craft_ui::ComboBox::from_id_salt(("dimstyle", "txsty"))
-                            .selected_text(cur.text_style.as_str())
-                            .show_ui(ui, |ui| {
-                                for s in &text_styles {
-                                    if ui.selectable_label(*s == cur.text_style, s).clicked() {
-                                        picked = Some(s.clone());
-                                    }
+                        craft_ui::ComboBox::from_id_salt(("dimstyle", "txsty")).selected_text(cur.text_style.as_str()).show_ui(ui, |ui| {
+                            for s in &text_styles {
+                                if ui.selectable_label(*s == cur.text_style, s).clicked() {
+                                    picked = Some(s.clone());
                                 }
-                            });
+                            }
+                        });
                         if let Some(name) = picked {
                             action = Some(("dimstyle", json!({ "name": sel, "textStyle": name, "current": false })));
                         }
@@ -1241,11 +1238,7 @@ fn dim_style(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                                 }
                                 if let Some(vb) = bo.get(k) {
                                     if va != vb {
-                                        diffs.push((
-                                            k.clone(),
-                                            va.to_string().chars().take(40).collect(),
-                                            vb.to_string().chars().take(40).collect(),
-                                        ));
+                                        diffs.push((k.clone(), va.to_string().chars().take(40).collect(), vb.to_string().chars().take(40).collect()));
                                     }
                                 }
                             }
