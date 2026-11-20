@@ -102,16 +102,38 @@ pub fn image_dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             PathType::Relative => "relative",
             PathType::NonePath => "none",
         };
-        let mut params = json!({ "path": v.0, "pathType": path_type, "rotation": v.3 });
-        if !v.6 {
-            params["at"] = json!(v.1);
-        }
-        if v.4 > 0.0 {
-            params["scale"] = json!(v.4);
+        let specify_any = v.6 || v.7 || v.8;
+        if specify_any {
+            *open = false;
+            app.start("imageattach");
+            app.cmdline(&v.0);
+            app.cmdline(match path_type {
+                "full" => "Full",
+                "relative" => "Relative",
+                _ => "None",
+            });
+            if !v.6 {
+                app.cmdline(&format!("{},{}", v.1[0], v.1[1]));
+            }
+            if !v.7 {
+                if v.4 > 0.0 {
+                    app.cmdline(&format!("{}", v.4));
+                } else {
+                    app.cmdline(&format!("{}", v.2));
+                }
+            }
+            if !v.8 {
+                app.cmdline(&format!("{}", v.3));
+            }
         } else {
-            params["width"] = json!(v.2);
+            let mut params = json!({ "path": v.0, "pathType": path_type, "rotation": v.3, "at": v.1 });
+            if v.4 > 0.0 {
+                params["scale"] = json!(v.4);
+            } else {
+                params["width"] = json!(v.2);
+            }
+            let _ = app.run("imageattach", params);
         }
-        let _ = app.run("imageattach", &params);
     }
     if apply || cancel || !*open {
         ctx.data_mut(|d| d.remove::<(String, [f64; 2], f64, f64, f64, PathType, bool, bool, bool, Option<String>, Option<TextureHandle>)>(id));
@@ -183,6 +205,8 @@ pub fn pdf_dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             ui.horizontal(|ui| {
                 let l = ui.label(crate::tl!("Scale (drawing units per inch)"));
                 ui.add(egui::DragValue::new(&mut v.3).speed(0.1).range(0.000001..=1e9)).labelled_by(l.id);
+                // reuse v.7 as scale specify
+                ui.checkbox(&mut v.7, crate::tl!("Specify on screen"));
             });
             ui.horizontal(|ui| {
                 let l = ui.label(crate::tl!("Rotation (degrees)"));
@@ -235,7 +259,7 @@ pub fn pdf_dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
                                         let mut s = tex.size_vec2();
                                         let k = (100.0 / s.x).min(100.0 / s.y).min(1.0);
                                         s *= k;
-                                        if ui.add(egui::ImageButton::new((tex.id(), s))).clicked() {
+                                        if ui.add(egui::Image::new((tex.id(), s))).clicked() {
                                             v.1 = (idx as i32) + 1;
                                         }
                                     } else {
@@ -261,11 +285,30 @@ pub fn pdf_dialog(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) {
             PathTypePdf::Relative => "relative",
             PathTypePdf::NonePath => "none",
         };
-        let mut params = json!({ "path": v.0, "pathType": path_type, "page": v.1, "scale": v.3, "rotation": v.4 });
-        if !v.6 {
-            params["at"] = json!(v.2);
+        let specify_any = v.6 || v.7 || v.8;
+        if specify_any {
+            *open = false;
+            app.start("pdfattach");
+            app.cmdline(&v.0);
+            app.cmdline(match path_type {
+                "full" => "Full",
+                "relative" => "Relative",
+                _ => "None",
+            });
+            app.cmdline(&v.1.to_string());
+            if !v.6 {
+                app.cmdline(&format!("{},{}", v.2[0], v.2[1]));
+            }
+            if !v.7 {
+                app.cmdline(&format!("{}", v.3));
+            }
+            if !v.8 {
+                app.cmdline(&format!("{}", v.4));
+            }
+        } else {
+            let mut params = json!({ "path": v.0, "pathType": path_type, "page": v.1, "scale": v.3, "rotation": v.4, "at": v.2 });
+            let _ = app.run("pdfattach", params);
         }
-        let _ = app.run("pdfattach", &params);
     }
     if apply || cancel || !*open {
         ctx.data_mut(|d| d.remove::<(String, i32, [f64; 2], f64, f64, PathTypePdf, bool, bool, bool, Option<Vec<Option<TextureHandle>>>, Option<String>)>(id));

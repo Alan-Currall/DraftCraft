@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 use super::file::{base64_decode, pdf_hooks};
 use super::{CommandSpec, bad, bool_or, f64_or, point_param, str_param};
-use crate::{Result, Session};
+use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
 /// Longest PDF path taken from a caller.
 const MAX_PATH: usize = 4096;
@@ -39,7 +39,8 @@ pub fn specs() -> Vec<CommandSpec> {
              reading `path`), page?: number from 1 (default 1), at?: [x,y] lower-left corner (default 0,0), scale?: drawing units per inch \
              (default: the drawing's insertion units, 25.4 for millimetres), rotation? (degrees), name?} → {name, handle, path, page, pages, \
              size: [w, h] in drawing units}",
-        ),
+        )
+        .interactive(|_| Ok(Box::<PdfAttachM>::default())),
         CommandSpec::new("pdfimport", "PDF Import", run_pdfimport).menu(&["Insert", "PDF Import"]).params(
             "{handle?: hex of a PDF underlay (imports the page it shows, where it is; `keep?: false` also removes the underlay), \
              path?: PDF file, data?: base64 contents, page?: from 1 (default 1), at?: [x,y] (default 0,0), scale?: drawing units per inch \
@@ -452,6 +453,142 @@ fn run_pdfimport(s: &mut Session, p: &Value) -> Result<Value> {
         s.echo(format!("PDFIMPORT: {n}"));
     }
     Ok(json!({ "handles": handles, "counts": { "vectors": vectors, "fills": fills, "text": texts }, "notes": notes }))
+}
+
+// ---------------- interactive PDFATTACH ----------------
+
+#[derive(Default)]
+struct PdfAttachM {
+    path: Option<String>,
+    path_type: Option<String>,
+    page: Option<usize>,
+    at: Option<Vec2>,
+    scale: Option<f64>,       // drawing units per inch
+    rotation_deg: Option<f64>,
+}
+
+impl Interactive for PdfAttachM {
+    fn name(&self) -> &'static str {
+        "PDFATTACH"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match (&self.path, &self.path_type, self.page, &self.at, self.scale, self.rotation_deg) {
+            (None, ..) => Prompt::new("Enter PDF file path", Accept::TEXT),
+            (Some(_), None, ..) => Prompt::new("Path type [Full/Relative/None]", Accept::TEXT).kw(&["Full", "Relative", "None"]),
+            (Some(_), Some(_), None, ..) => Prompt::new("Enter page number", Accept::NUMBER),
+            (Some(_), Some(_), Some(_), None, ..) => Prompt::new("Specify insertion point", Accept::POINT),
+            (Some(_), Some(_), Some(_), Some(at), None, ..) => {
+                // A number (units/inch), or a point measuring a distance from the insertion.
+                Prompt::new("Specify scale (drawing units per inch)", Accept::POINT_OR_NUMBER).base(*at).distance()
+            }
+            (Some(_), Some(_), Some(_), Some(_), Some(_), None) => {
+                Prompt::new("Specify rotation (degrees)", Accept::POINT_OR_NUMBER)
+            }
+            _ => Prompt::new("Press Enter to place", Accept::TEXT),
+        }
+    }
+    fn input(&mut self, _s: &mut Session, i: Input) -> Result<Step> {
+        match (&self.path, &self.path_type, self.page, &self.at, self.scale, self.rotation_deg, i) {
+            (None, .., Input::Text(t)) => {
+                let p = t.trim();
+                if p.is_empty() {
+                    return Ok(Step::Done);
+                }
+                self.path = Some(p.to_string());
+                Ok(Step::Continue)
+            }
+            (Some(_), None, .., Input::Keyword(k)) => {
+                let v = if k.eq_ignore_ascii_case("full") {
+                    "full"
+                } else if k.eq_ignore_ascii_case("relative") {
+                    "relative"
+                } else if k.eq_ignore_ascii_case("none") {
+                    "none"
+                } else {
+                    return Ok(Step::Continue);
+                };
+                self.path_type = Some(v.to_string());
+                Ok(Step::Continue)
+            }
+            (Some(_), None, .., Input::Text(t)) => {
+                let norm = t.trim().to_ascii_lowercase();
+                if ["full", "relative", "none"].contains(&norm.as_str()) {
+                    self.path_type = Some(norm);
+                }
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), None, .., Input::Text(t)) => {
+                if let Ok(pg) = t.trim().parse::<usize>() {
+                    if pg >= 1 {
+                        self.page = Some(pg);
+                    }
+                }
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), Some(_), None, .., Input::Point(p)) => {
+                self.at = Some(p);
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), Some(_), Some(at), None, .., Input::Point(p)) => {
+                self.scale = Some(p.dist(*at));
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), Some(_), Some(_), None, .., Input::Text(t)) => {
+                if let Ok(k) = t.trim().parse::<f64>() {
+                    if k.is_finite() && k > 0.0 {
+                        self.scale = Some(k);
+                    }
+                }
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), Some(_), Some(at), Some(_), None, .., Input::Point(p)) => {
+                let v = p - *at;
+                self.rotation_deg = Some(v.y.atan2(v.x).to_degrees());
+                // Place now.
+                let mut p = json!({
+                    "path": self.path.clone().unwrap(),
+                    "page": self.page.unwrap_or(1),
+                    "at": [at.x, at.y],
+                    "scale": self.scale.unwrap_or(1.0),
+                    "rotation": self.rotation_deg.unwrap()
+                });
+                if let Some(t) = &self.path_type { p["pathType"] = json!(t); }
+                let _ = _s.execute("pdfattach", &p)?;
+                Ok(Step::Done)
+            }
+            (Some(_), Some(_), Some(_), Some(_), Some(_), None, .., Input::Text(t)) => {
+                if let Ok(a) = t.trim().parse::<f64>() {
+                    if a.is_finite() {
+                        self.rotation_deg = Some(a);
+                        // Place now.
+                        let at = self.at.unwrap_or(Vec2::ZERO);
+                        let mut p = json!({
+                            "path": self.path.clone().unwrap(),
+                            "page": self.page.unwrap_or(1),
+                            "at": [at.x, at.y],
+                            "scale": self.scale.unwrap_or(1.0),
+                            "rotation": a
+                        });
+                        if let Some(t) = &self.path_type { p["pathType"] = json!(t); }
+                        let _ = _s.execute("pdfattach", &p)?;
+                        return Ok(Step::Done);
+                    }
+                }
+                Ok(Step::Continue)
+            }
+            (_, _, _, _, _, _, Input::Enter) => {
+                if let (Some(path), Some(pt), Some(pg), Some(at), Some(k)) = (&self.path, &self.path_type, self.page, &self.at, self.scale) {
+                    let mut p = json!({ "path": path, "pathType": pt, "page": pg, "at": [at.x, at.y], "scale": k, "rotation": self.rotation_deg.unwrap_or(0.0) });
+                    let _ = _s.execute("pdfattach", &p)?;
+                }
+                Ok(Step::Done)
+            }
+            _ => Ok(Step::Continue),
+        }
+    }
+    fn preview(&self, _s: &Session, _c: Vec2) -> Vec<EntityKind> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

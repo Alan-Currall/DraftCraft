@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::file::base64_decode;
 use super::{CommandSpec, bad, f64_or, point_param, str_param};
-use crate::{Result, Session};
+use crate::{Accept, Input, Interactive, Prompt, Result, Session, Step};
 
 /// Most image files loaded per drawing.
 const MAX_IMAGE_FILES: usize = 1000;
@@ -37,7 +37,8 @@ pub fn specs() -> Vec<CommandSpec> {
              (instead of reading `path`), at?: [x,y] lower-left corner (default 0,0), scale?: number (default 1: the image is one drawing unit \
              wide), width?: width in drawing units (instead of `scale`), rotation? (degrees), name? (default: the file name)} → {name, handle, \
              path, pixels: [w, h], size: [w, h]}",
-            ),
+            )
+            .interactive(|_| Ok(Box::<ImageAttachM>::default())),
         CommandSpec::new("image", "Raster Images", run_image)
             .alias(&["im"])
             .params("{} → {images: [{name, path, foundAt, status: Loaded|Not Found|Not loaded, references, pixels?: [w, h]}]}")
@@ -407,4 +408,119 @@ fn describe(d: &Drawing, path: &str, host: Option<&str>) -> Value {
         (None, Some(_)) => "Not loaded",
     };
     json!({ "path": path, "foundAt": found_at, "status": status, "pixels": loaded.map(|r| json!([r.width(), r.height()])) })
+}
+
+// ---------------- interactive IMAGEATTACH ----------------
+
+#[derive(Default)]
+struct ImageAttachM {
+    path: Option<String>,
+    path_type: Option<String>, // "full" | "relative" | "none"
+    at: Option<Vec2>,
+    width: Option<f64>,
+    rotation_deg: Option<f64>,
+}
+
+impl Interactive for ImageAttachM {
+    fn name(&self) -> &'static str {
+        "IMAGEATTACH"
+    }
+    fn prompt(&self, _s: &Session) -> Prompt {
+        match (&self.path, &self.path_type, &self.at, self.width, self.rotation_deg) {
+            (None, ..) => Prompt::new("Enter image file path", Accept::TEXT),
+            (Some(_), None, ..) => Prompt::new("Path type [Full/Relative/None]", Accept::TEXT).kw(&["Full", "Relative", "None"]),
+            (Some(_), Some(_), None, ..) => Prompt::new("Specify insertion point", Accept::POINT),
+            (Some(_), Some(_), Some(at), None, ..) => {
+                // Width in drawing units; a point gives a distance from insertion.
+                Prompt::new("Specify width", Accept::POINT_OR_NUMBER).base(*at).distance()
+            }
+            (Some(_), Some(_), Some(_), Some(_), None, ..) => {
+                Prompt::new("Specify rotation (degrees)", Accept::POINT_OR_NUMBER)
+            }
+            _ => Prompt::new("Press Enter to place", Accept::TEXT),
+        }
+    }
+    fn input(&mut self, s: &mut Session, i: Input) -> Result<Step> {
+        match (&self.path, &self.path_type, &self.at, self.width, self.rotation_deg, i) {
+            (None, .., Input::Text(t)) => {
+                let p = t.trim();
+                if p.is_empty() {
+                    return Ok(Step::Done);
+                }
+                self.path = Some(p.to_string());
+                Ok(Step::Continue)
+            }
+            (Some(_), None, .., Input::Keyword(k)) => {
+                let v = if k.eq_ignore_ascii_case("full") {
+                    "full"
+                } else if k.eq_ignore_ascii_case("relative") {
+                    "relative"
+                } else if k.eq_ignore_ascii_case("none") {
+                    "none"
+                } else {
+                    return Ok(Step::Continue);
+                };
+                self.path_type = Some(v.to_string());
+                Ok(Step::Continue)
+            }
+            (Some(_), None, .., Input::Text(t)) => {
+                let norm = t.trim().to_ascii_lowercase();
+                if ["full", "relative", "none"].contains(&norm.as_str()) {
+                    self.path_type = Some(norm);
+                }
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), None, .., Input::Point(p)) => {
+                self.at = Some(p);
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), Some(at), None, .., Input::Point(p)) => {
+                self.width = Some(p.dist(*at));
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), Some(_), None, .., Input::Text(t)) => {
+                if let Ok(w) = t.trim().parse::<f64>() {
+                    if w.is_finite() && w > 0.0 {
+                        self.width = Some(w);
+                    }
+                }
+                Ok(Step::Continue)
+            }
+            (Some(_), Some(_), Some(at), Some(_), None, .., Input::Point(p)) => {
+                let v = p - *at;
+                self.rotation_deg = Some(v.y.atan2(v.x).to_degrees());
+                // All set: place.
+                let mut p = json!({ "path": self.path.clone().unwrap(), "at": [at.x, at.y], "width": self.width.unwrap_or(1.0), "rotation": self.rotation_deg.unwrap() });
+                if let Some(t) = &self.path_type { p["pathType"] = json!(t); }
+                let _ = s.execute("imageattach", &p)?;
+                Ok(Step::Done)
+            }
+            (Some(_), Some(_), Some(_), Some(_), None, .., Input::Text(t)) => {
+                if let Ok(a) = t.trim().parse::<f64>() {
+                    if a.is_finite() {
+                        self.rotation_deg = Some(a);
+                        // All set: place.
+                        let at = self.at.unwrap_or(Vec2::ZERO);
+                        let mut p = json!({ "path": self.path.clone().unwrap(), "at": [at.x, at.y], "width": self.width.unwrap_or(1.0), "rotation": a });
+                        if let Some(t) = &self.path_type { p["pathType"] = json!(t); }
+                        let _ = s.execute("imageattach", &p)?;
+                        return Ok(Step::Done);
+                    }
+                }
+                Ok(Step::Continue)
+            }
+            (_, _, _, _, _, Input::Enter) => {
+                if let (Some(path), Some(pt), Some(at), Some(w)) = (&self.path, &self.path_type, &self.at, self.width) {
+                    let mut p = json!({ "path": path, "at": [at.x, at.y], "width": w, "rotation": self.rotation_deg.unwrap_or(0.0) });
+                    p["pathType"] = json!(pt);
+                    let _ = s.execute("imageattach", &p)?;
+                }
+                Ok(Step::Done)
+            }
+            _ => Ok(Step::Continue),
+        }
+    }
+    fn preview(&self, _s: &Session, _c: Vec2) -> Vec<draftcraft_doc::EntityKind> {
+        Vec::new()
+    }
 }
