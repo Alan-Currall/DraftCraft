@@ -6,7 +6,8 @@ use draftcraft_engine::{Session, doc::Space};
 use serde_json::json;
 
 fn sample_pdf_bytes() -> Vec<u8> {
-    use draftcraft_doc::{Common, Drawing, EntityKind, Line, Vec3};
+    use draftcraft_doc::{Common, Drawing, EntityKind, Line};
+    use draftcraft_geom::Vec3;
     use draftcraft_io::{PdfOptions, pdf};
     // A tiny drawing with one segment; device-independent.
     let mut d = Drawing::new_metric();
@@ -18,7 +19,15 @@ fn sample_pdf_bytes() -> Vec<u8> {
 #[test]
 fn refresh_upsamples_on_demand_and_never_downsamples() {
     // Install real PDF hooks.
-    set_pdf_hooks(PdfHooks { pages: draftcraft_io::pdf_read::pages, rasterize: draftcraft_io::pdf_read::rasterize, import: draftcraft_io::pdf_read::import });
+    set_pdf_hooks(PdfHooks {
+        pages: |b| draftcraft_io::pdf_read::pages(b).map_err(|e| e.to_string()),
+        rasterize: |b, i, d| draftcraft_io::pdf_read::rasterize(b, i, d).map_err(|e| e.to_string()),
+        import: |b, i, v, f, t| {
+            let opts = draftcraft_io::pdf_read::ImportOptions { vectors: v, fills: f, text: t };
+            let (shapes, notes) = draftcraft_io::pdf_read::import(b, i, opts).map_err(|e| e.to_string())?;
+            Ok((shapes, notes.images, notes.truncated))
+        },
+    });
     let mut s = Session::new();
     // Attach page 1 at default scale with bytes handed over.
     let data = base64_encode(&sample_pdf_bytes());

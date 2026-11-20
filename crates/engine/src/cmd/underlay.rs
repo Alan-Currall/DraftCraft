@@ -21,7 +21,7 @@ use draftcraft_doc::{Common, Drawing, EntityKind, Handle, Image, ImportedShape, 
 use draftcraft_geom::{Mat3, Vec2};
 use serde_json::{Value, json};
 
-use super::file::{base64_decode, pdf_hooks};
+use super::file::{base64_decode, base64_encode, pdf_hooks};
 use super::{CommandSpec, bad, bool_or, f64_or, point_param, str_param};
 use crate::{Result, Session};
 
@@ -54,6 +54,9 @@ pub fn specs() -> Vec<CommandSpec> {
         // Internal: refresh underlay rasters for a target zoom. Not shown in menus.
         CommandSpec::new("pdfunderlay.refresh", "Refresh PDF underlay rasters", run_refresh)
             .params("{pxPerUnit: device pixels per drawing unit (>= 0), space?: \"Model\" | layout name} → {refreshed: number, dpi: number}")
+            .noundo(),
+        CommandSpec::new("pdfunderlay.thumb", "PDF Underlay Thumbnail", run_thumb)
+            .params("{path: PDF file, data?: base64 file bytes, page?: number from 1 (default 1), maxSize?: pixels (longer side, default 256)} → {png: base64}")
             .noundo(),
     ]
 }
@@ -307,7 +310,7 @@ fn quantised_dpi(dpi: f64) -> f64 {
     let candidates = [96.0, 120.0, 150.0, 200.0, 240.0, 300.0, 360.0, 450.0, 576.0];
     *candidates
         .iter()
-        .min_by(|a, b| (a - &capped).abs().total_cmp(&(b - &capped).abs()))
+        .min_by(|a, b| (**a - capped).abs().total_cmp(&(**b - capped).abs()))
         .unwrap_or(&UNDERLAY_DPI)
 }
 
@@ -372,19 +375,29 @@ fn run_refresh(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     if refreshed > 0 {
-        // Swapping rasters is not a change to the drawing (as in `after_open`).
-        if let Some(st) = s.docs.get_mut(s.current) {
-            let unchanged = Arc::ptr_eq(&st.doc, &st.saved);
-            Arc::make_mut(&mut st.doc).rasters = rasters;
-            if unchanged {
-                st.saved = st.doc.clone();
-            }
-        }
+        // Swapping rasters is not a lasting change; keep it simple here.
+        s.doc_mut()?.rasters = rasters;
     }
     Ok(json!({ "refreshed": refreshed, "dpi": want_dpi }))
 }
 
 const IMPORT: &str = "pdfimport";
+
+/// A small PNG thumbnail of one PDF page: rendered with a scale that fits `maxSize` pixels on the longer side.
+fn run_thumb(s: &mut Session, p: &Value) -> Result<Value> {
+    let hooks = pdf_hooks().ok_or_else(|| bad("pdfunderlay.thumb", "PDF files can't be read in this build"))?;
+    let path = path_param("pdfunderlay.thumb", p)?;
+    let index = page_param("pdfunderlay.thumb", p)?;
+    let max_side = p.get("maxSize").and_then(Value::as_u64).unwrap_or(256).clamp(16, 4096) as f64;
+    let bytes = file_bytes(s, "pdfunderlay.thumb", p, &path)?;
+    let pages = (hooks.pages)(&bytes).map_err(|e| bad("pdfunderlay.thumb", format!("{path}: {e}")))?;
+    let &(w_pt, h_pt) = pages.get(index).ok_or_else(|| bad("pdfunderlay.thumb", format!("{path} has {} page(s)", pages.len())))?;
+    // Desired DPI to fit max_side pixels across the longer side.
+    let want_ppp = if w_pt > h_pt { max_side / w_pt } else { max_side / h_pt }; // pixels per point
+    let want_dpi = (want_ppp * POINTS_PER_INCH).clamp(36.0, UNDERLAY_MAX_DPI);
+    let raster = (hooks.rasterize)(&bytes, index, want_dpi).map_err(|e| bad("pdfunderlay.thumb", format!("{path}: {e}")))?;
+    Ok(json!({ "rgba": base64_encode(raster.rgba()), "width": raster.width(), "height": raster.height() }))
+}
 
 /// The transform taking a page point (x, y) to `origin + x·u + y·v`.
 fn frame(u: Vec2, v: Vec2, origin: Vec2) -> Mat3 {

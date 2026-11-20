@@ -35,11 +35,14 @@ pub fn route(app: &mut CadApp, id: &str) -> Result<Value, String> {
             {
                 return app.run("pdfimport", json!({ "handle": h }));
             }
-            let Some(pick) = app.services.pick_file.as_ref() else { return no_picker(app, &cmd.to_ascii_uppercase(), r#"{"path": "plan.pdf"}"#) };
-            match pick(label, exts) {
-                Some(path) => app.run(cmd, json!({ "path": path })),
-                None => Ok(Value::Null),
+            // Open purpose-built attach dialogs instead of a bare file picker.
+            app.ui.dialog = Some(match cmd {
+                "imageattach" => "attach.image",
+                "pdfattach" | "pdfimport" => "attach.pdf",
+                _ => "attach.image", // default to image; PDF can be attached from its own dialog
             }
+            .into());
+            Ok(Value::Null)
         }
         "pointcloudattach" | "pcattach" | "pointcloud" => {
             let Some(pick) = app.services.pick_file.as_ref() else { return no_picker(app, "POINTCLOUDATTACH", r#"{"path": "scan.las"}"#) };
