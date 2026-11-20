@@ -662,6 +662,9 @@ fn run_pagesetup(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // Report every layout's page setup.
         let d = s.doc()?;
+        // Hint the drawing folder for provider listing.
+        let draw_dir = s.state().ok().and_then(|st| st.path.as_deref()).and_then(|p| std::path::Path::new(p).parent().map(|pp| pp.to_path_buf()));
+        super::plotstyles::set_current_drawing_dir(draw_dir.as_deref());
         return Ok(json!({
             "layouts": d.layouts.iter().map(|l| json!({"name": l.name, "page": serde_json::to_value(&l.page).unwrap_or(Value::Null)})).collect::<Vec<_>>(),
             "papers": draftcraft_render::PAPER_SIZES.iter().map(|p| p.name).collect::<Vec<_>>(),
@@ -782,6 +785,9 @@ fn plot_sheets(cmd: &str, d: &draftcraft_doc::Drawing, v: &Value) -> Result<Vec<
 /// `layers?: bool` (drawing layers as PDF layers, default on), `offLayers?: bool` (layers that
 /// are off on hidden PDF layers), `links?: [{handle, url}]` (hyperlinks) and `title?`.
 fn run_plot(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
+    // Hint the drawing folder so external plot style lookups (provider) can resolve drawing-local tables.
+    let draw_dir = s.state().ok().and_then(|st| st.path.as_deref()).and_then(|p| std::path::Path::new(p).parent().map(|pp| pp.to_path_buf()));
+    super::plotstyles::set_current_drawing_dir(draw_dir.as_deref());
     let hook = io().and_then(|h| h.plot).ok_or_else(|| bad(cmd, "plotting is not available in this build"))?;
     // Checked here for a clear error; the plotter resolves the names the same way.
     let sheets = p.get("layouts").map(|v| plot_sheets(cmd, s.doc()?, v)).transpose()?;

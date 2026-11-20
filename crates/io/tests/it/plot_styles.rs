@@ -116,3 +116,33 @@ fn pdf_applies_a_named_table_from_the_drawing() {
     let text = pdf_text(&d, json!({}));
     assert!(text.contains("0 0 1 RG") && !text.contains("1 0 0 RG"), "{text}");
 }
+
+#[test]
+fn pdf_applies_ctb_monochrome_and_screening() {
+    // Real CTB plaintext payload: Color_1 prints black with 50% screening.
+    let body = r#"
+description=Monochrome 50
+plot_style{
+ 1{
+  name=Color_1
+  color_policy=1
+  screen=50
+  lineweight=0.50
+ }
+}
+"#;
+    let bytes = {
+        let mut out = Vec::from(b"PIAFILEVERSION_2.0\n"[..].to_vec());
+        let mut comp = miniz_oxide::deflate::compress_to_vec_zlib(body.as_bytes(), 6);
+        out.append(&mut comp);
+        out
+    };
+    let t = draftcraft_doc::parse_ctb_or_stb("custom.ctb", &bytes).unwrap();
+    let mut d = layout_with_red_line();
+    d.plot_style_tables.push(t);
+    d.layouts[0].page.plot_style_table = "custom.ctb".into();
+    let txt = pdf_text(&d, json!({}));
+    // The red stroke is no longer red, and not solid black either (screened).
+    assert!(!txt.contains("1 0 0 RG"), "{txt}");
+    assert!(!txt.contains("0 0 0 RG"), "{txt}");
+}

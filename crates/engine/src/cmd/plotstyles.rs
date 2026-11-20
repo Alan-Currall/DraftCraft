@@ -19,6 +19,7 @@ use crate::cmd::{CommandSpec, bad};
 
 static PATH_OVERRIDE: Mutex<String> = Mutex::new(String::new());
 static PROVIDER_INSTALLED: OnceLock<()> = OnceLock::new();
+static DRAWING_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Register the global provider once so `draftcraft_doc::plot_style_table` can resolve user tables.
 pub fn register_provider_once() {
@@ -28,6 +29,13 @@ pub fn register_provider_once() {
             get_by_name: get_by_name,
         };
         draftcraft_doc::set_plot_style_provider(provider);
+    }
+}
+
+/// Hint the current drawing's folder for provider lookups.
+pub fn set_current_drawing_dir(dir: Option<&Path>) {
+    if let Ok(mut g) = DRAWING_DIR.lock() {
+        *g = dir.map(|p| p.to_path_buf());
     }
 }
 
@@ -58,14 +66,19 @@ fn want_file(path: &Path) -> bool {
 
 /// List user tables by file name (case preserved).
 pub fn list() -> Vec<String> {
-    let Some(dir) = user_folder() else { return Vec::new() };
-    let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out = Vec::new();
-    for e in read.flatten().take(10_000) {
-        let p = e.path();
-        if e.file_type().is_ok_and(|t| t.is_file()) && want_file(&p) {
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                out.push(name.to_string());
+    let dirs: Vec<PathBuf> = [DRAWING_DIR.lock().ok().and_then(|o| o.clone()), user_folder()].into_iter().flatten().collect();
+    for dir in dirs {
+        if let Ok(read) = std::fs::read_dir(dir) {
+            for e in read.flatten().take(10_000) {
+                let p = e.path();
+                if e.file_type().is_ok_and(|t| t.is_file()) && want_file(&p) {
+                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                        if !out.iter().any(|n: &String| n.eq_ignore_ascii_case(name)) {
+                            out.push(name.to_string());
+                        }
+                    }
+                }
             }
         }
     }
@@ -76,13 +89,27 @@ pub fn list() -> Vec<String> {
 /// Resolve a user table by name (case-insensitive).
 pub fn resolve_path(name: &str) -> Option<PathBuf> {
     let lower = name.trim().to_ascii_lowercase();
-    let Some(dir) = user_folder() else { return None };
-    let Ok(read) = std::fs::read_dir(dir) else { return None };
-    for e in read.flatten().take(10_000) {
-        let p = e.path();
-        let fname = p.file_name().and_then(|n| n.to_str()).map(|s| s.to_ascii_lowercase());
-        if e.file_type().is_ok_and(|t| t.is_file()) && want_file(&p) && fname.as_deref() == Some(lower.as_str()) {
-            return Some(p);
+    // Drawing folder wins, then user folder.
+    if let Some(dir) = DRAWING_DIR.lock().ok().and_then(|o| o.clone()) {
+        if let Ok(read) = std::fs::read_dir(dir) {
+            for e in read.flatten().take(10_000) {
+                let p = e.path();
+                let fname = p.file_name().and_then(|n| n.to_str()).map(|s| s.to_ascii_lowercase());
+                if e.file_type().is_ok_and(|t| t.is_file()) && want_file(&p) && fname.as_deref() == Some(lower.as_str()) {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    if let Some(dir) = user_folder() {
+        if let Ok(read) = std::fs::read_dir(dir) {
+            for e in read.flatten().take(10_000) {
+                let p = e.path();
+                let fname = p.file_name().and_then(|n| n.to_str()).map(|s| s.to_ascii_lowercase());
+                if e.file_type().is_ok_and(|t| t.is_file()) && want_file(&p) && fname.as_deref() == Some(lower.as_str()) {
+                    return Some(p);
+                }
+            }
         }
     }
     None
